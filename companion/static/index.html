@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1a1a1a">
+
+  <!-- PWA / iOS home screen -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Elwin">
+  <link rel="apple-touch-icon" href="/static/icon.svg">
+
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>Elwin Ransom</title>
+</head>
+<body>
+
+<!-- ── Auth screen ─────────────────────────────────────── -->
+<div id="auth-screen">
+  <div id="auth-box">
+    <h1>Elwin Ransom</h1>
+    <p>Enter your password to continue.</p>
+    <form id="auth-form">
+      <input type="password" id="password-input" placeholder="Password" autocomplete="current-password" autofocus>
+      <p id="auth-error"></p>
+      <button type="submit">Enter</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── App shell ────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Header -->
+  <header>
+    <button id="menu-btn" aria-label="Open menu">&#9776;</button>
+    <h1>Elwin</h1>
+    <span id="status-text"></span>
+    <div id="status-dot" title="Status"></div>
+  </header>
+
+  <section id="presence-panel" aria-label="Presence panel">
+    <div class="presence-card">
+      <span class="presence-label">Session</span>
+      <strong id="presence-session">booting</strong>
+    </div>
+    <div class="presence-card">
+      <span class="presence-label">Next</span>
+      <strong id="presence-next">No upcoming events</strong>
+    </div>
+    <div class="presence-card">
+      <span class="presence-label">Focus</span>
+      <strong id="presence-focus">No active tasks</strong>
+    </div>
+    <div class="presence-card">
+      <span class="presence-label">Dory</span>
+      <strong id="presence-dory">offline</strong>
+    </div>
+  </section>
+
+  <!-- Sidebar overlay -->
+  <div id="sidebar-overlay" aria-hidden="true"></div>
+
+  <!-- Sidebar nav -->
+  <nav id="sidebar-nav" aria-label="Menu">
+    <div id="sidebar-header">
+      <h2>Menu</h2>
+      <button id="close-sidebar-btn" aria-label="Close menu">&times;</button>
+    </div>
+
+    <button class="sidebar-btn" id="btn-new">
+      <span class="icon">&#43;</span> New Conversation
+    </button>
+    <div class="sidebar-sep"></div>
+    <button class="sidebar-btn" id="btn-schedule">
+      <span class="icon">&#128197;</span> Schedule
+    </button>
+    <button class="sidebar-btn" id="btn-todos">
+      <span class="icon">&#9989;</span> Todos
+    </button>
+    <button class="sidebar-btn" id="btn-notes">
+      <span class="icon">&#128203;</span> Notes
+    </button>
+    <div class="sidebar-sep"></div>
+    <button class="sidebar-btn" id="btn-briefing">
+      <span class="icon">&#9728;</span> Morning Briefing
+    </button>
+    <button class="sidebar-btn" id="btn-presence">
+      <span class="icon">&#129302;</span> Presence
+    </button>
+    <button class="sidebar-btn" id="btn-memory">
+      <span class="icon">&#129504;</span> Memory Inspector
+    </button>
+    <button class="sidebar-btn" id="btn-usage">
+      <span class="icon">&#128202;</span> Search Usage
+    </button>
+    <div class="sidebar-sep"></div>
+    <button class="sidebar-btn" id="btn-push">
+      <span class="icon">&#128276;</span> Enable Notifications
+    </button>
+  </nav>
+
+  <!-- Messages -->
+  <main id="messages" aria-live="polite" aria-label="Conversation"></main>
+
+  <!-- Info panel (schedule / todos / notes) -->
+  <div id="info-panel" role="region" aria-label="Info">
+    <div id="info-header">
+      <span id="info-title"></span>
+      <button id="info-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="info-content"></div>
+  </div>
+
+  <!-- Input area -->
+  <div id="input-area">
+    <button class="icon-btn" id="attach-btn" aria-label="Attach image">&#128247;</button>
+    <textarea id="message-input" rows="1" placeholder="Message Elwin..." aria-label="Message input"></textarea>
+    <button class="icon-btn" id="mic-btn" aria-label="Hold to record voice">&#127908;</button>
+    <button id="send-btn" aria-label="Send">&#10148;</button>
+  </div>
+
+  <!-- Hidden file input for camera / gallery -->
+  <input type="file" id="file-input" accept="image/*" capture="environment" style="display:none" aria-hidden="true">
+
+</div><!-- #app -->
+
+<script src="/static/app.js"></script>
+</body>
+</html>

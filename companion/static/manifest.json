@@ -1,0 +1,17 @@
+{
+  "name": "Elwin Ransom",
+  "short_name": "Elwin",
+  "description": "AI companion",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1a1a",
+  "theme_color": "#1a1a1a",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

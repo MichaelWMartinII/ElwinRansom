@@ -1,0 +1,14 @@
+.DS_Store
+.venv/
+.vision-server.pid
+agent.conf
+logs/
+memories/
+models/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

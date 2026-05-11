@@ -27,6 +27,7 @@ _conf = _parse_conf(_CONF)
 
 # Model selection
 MODEL = _conf.get("MODEL", "")
+OLLAMA_MODEL = _conf.get("OLLAMA_MODEL", "gemma4-free")
 
 # LLM server
 LLM_HOST = _conf.get("HOST", "127.0.0.1")

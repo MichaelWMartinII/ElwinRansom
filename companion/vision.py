@@ -27,7 +27,7 @@ def health_check() -> bool:
     """Return True if the vision server is reachable."""
     try:
         req = urllib.request.Request(
-            f"{config.VISION_BASE_URL}/health", headers=_headers()
+            f"{config.VISION_BASE_URL}/api/tags", headers=_headers()
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status == 200
@@ -52,6 +52,7 @@ def describe_image(image_path: str, question: str | None = None) -> str:
     prompt = question if question else "Identify and describe what you see in this image. Be specific and factual."
 
     body = {
+        "model": config.OLLAMA_MODEL,
         "messages": [
             {
                 "role": "user",

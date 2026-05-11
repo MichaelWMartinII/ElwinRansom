@@ -1,201 +1,282 @@
 # Elwin Ransom
 
-A local-first personal AI companion. Runs entirely on your hardware — no cloud, no subscriptions, no data leaving the device.
+A local-first personal AI companion. Runs entirely on your hardware — no cloud inference, no subscriptions, no data leaving the device.
 
-Elwin handles long-term memory, voice I/O, vision, web search, reminders, calendar events, todos, and a daily morning briefing. Accessible via terminal REPL or Telegram.
+Elwin handles long-term memory, voice I/O, vision, web search, reminders, calendar events, todos, and a daily morning briefing. Three frontends: terminal REPL, Telegram bot, and a browser-based web UI (PWA).
 
 ---
 
 ## Features
 
-**Conversation + Memory**
+**Memory**
 - Three-tier memory: current session → semantic recall (embedding similarity) → extracted long-term facts
-- Background fact extraction after every exchange — people, relationships, preferences stored in SQLite
-- Context budget scales automatically with model context window size
-- Optional `Dory` integration for graph memory, long-term retrieval, and a memory inspector in the web UI
+- Background fact extraction after every exchange — people, relationships, preferences, and projects stored in SQLite
+- Facts are superseded on update, never silently overwritten
+- Optional [Dory](https://github.com/MichaelWMartinII/Dory) graph memory integration with a built-in memory inspector in the web UI
 
 **Voice**
-- Speech-to-text via `faster-whisper` (runs locally, base.en model)
-- Text-to-speech via `kokoro-onnx` (American Male voice, outputs OGG Opus for Telegram)
-- Send a voice message, get a voice reply
+- Speech-to-text via `faster-whisper` (local, base.en, int8)
+- Text-to-speech via `kokoro-onnx` (American Male voice, OGG Opus output)
+- Send a voice message in Telegram, get a voice reply
 
 **Vision**
-- Secondary vision model (Qwen3-VL-2B) on a separate server
-- Analyze images from Telegram, CLI, or live webcam capture
-- Model triggers camera with `[CAMERA]` marker
+- Image understanding via any multimodal Ollama model
+- `[CAMERA]` marker triggers webcam capture and description
+- Works in CLI, Telegram, and web UI
 
 **Web Search**
-- Optional Brave Search integration
-- Model emits `[SEARCH: query]` — results fed back in a second LLM pass
-- Quota tracked locally (1,000 req/month on $5 tier)
+- Brave Search integration — model emits `[SEARCH: query]`, results fed into a second LLM pass
+- Monthly quota tracked locally (1,000 req / $5 tier)
 
-**Butler**
-- `[REMIND: YYYY-MM-DD HH:MM | message]` — schedules launchd notification + Telegram alert
-- `[EVENT_ADD: date time | end time | title]` — calendar event with 15-min prep alert
-- `[TODO_ADD: priority | content]` / `[TODO_DONE: text]`
-- `[NOTE: content]`
+**Scheduling**
+- `[REMIND: YYYY-MM-DD HH:MM | message]` — one-shot launchd plist, fires at exact time via macOS notification + Telegram + Web Push
+- `[EVENT_ADD: date time | end-time | title]` — calendar event with automatic 15-minute prep alert
+- `[TODO_ADD: priority | content]` and `[TODO_DONE: partial text]` — task management
+- `[NOTE: content]` — quick capture
 
 **Morning Briefing**
-- Daily scheduled via launchd (configurable time)
-- Weather, today's events, pending todos, due reminders
-- Suggested first move plus Dory-derived memory signals
-- Delivered via Telegram + web push
+- Delivered daily at a configured time via Telegram and Web Push
+- Contents: date, weather, today's events, pending todos, due reminders, focus suggestion, Dory signals
 
 **Frontends**
-- Terminal REPL (`python -m companion`)
-- Telegram bot (single-owner, locked by user ID)
-- Web UI with presence panel and Dory memory inspector
-- Both use identical pipeline — just different I/O layers
+- **Terminal REPL** — full feature set, slash commands, streaming output
+- **Telegram bot** — single-owner, voice replies, photo analysis, all markers
+- **Web UI** — aiohttp server, SSE streaming, password-protected, PWA-enabled, Dory memory inspector
 
 ---
 
-## Models
+## Stack
 
-| Role | Model | Notes |
-|---|---|---|
-| Primary LLM | Qwen3-14B-Q4_K_M | Dense, 14B params, Q4 quant |
-| Vision | Qwen3-VL-2B-Instruct-Q8 | Multimodal, separate server |
-| Embeddings | all-MiniLM-L6-v2 | 384-dim, local cosine similarity |
-| STT | faster-whisper base.en | CTranslate2, int8 |
-| TTS | kokoro-onnx v1.0 int8 | American Male voice |
+| Component | Library / Tool |
+|-----------|----------------|
+| LLM inference | [Ollama](https://ollama.com) (any compatible model) |
+| Embeddings | `sentence-transformers` — `all-MiniLM-L6-v2` (384-dim, local) |
+| STT | `faster-whisper` (base.en, int8, CTranslate2) |
+| TTS | `kokoro-onnx` (v1.0 int8, American Male) |
+| Vision | Ollama multimodal model |
+| Storage | SQLite (WAL mode, 9 tables) |
+| Web server | `aiohttp` |
+| Telegram | `python-telegram-bot` |
+| Web Push | `pywebpush` (VAPID) |
+| Scheduling | macOS launchd |
+| Search | Brave Search API |
 
-All models run locally. No API calls for inference.
+No vector database. Similarity search is brute-force cosine via NumPy — simple, dependency-free, fast enough for personal use.
 
 ---
 
 ## Requirements
 
 - Python 3.11+
-- `llama-server` binary in PATH (from [llama.cpp](https://github.com/ggerganov/llama.cpp))
-- ffmpeg (`brew install ffmpeg`) — for voice and camera
-- GGUF model files in `./models/`
-- macOS (launchd scheduling, Metal GPU acceleration)
+- [Ollama](https://ollama.com) — `brew install ollama` or download from ollama.com
+- ffmpeg — `brew install ffmpeg`
+- macOS (launchd scheduling, avfoundation camera; core chat works on Linux)
 
 ---
 
-## Setup
+## Quick Start
 
-**1. Place models in `./models/`:**
-```
-models/
-  Qwen3-14B-Q4_K_M.gguf
-  Qwen3VL-2B-Instruct-Q8_0.gguf
-  mmproj-Qwen3VL-2B-Instruct-F16.gguf
-  voices-v1.0.bin
-```
-
-**2. Install Python deps:**
 ```bash
+# 1. Clone
+git clone https://github.com/MichaelWMartinII/ElwinRansom.git
+cd ElwinRansom
+
+# 2. Pull a model
+ollama pull gemma3:12b   # or any model you prefer
+
+# 3. Install Python dependencies
 pip install -r requirements.txt
+
+# 4. Configure
+cp agent.conf.example agent.conf
+# Edit agent.conf — set OLLAMA_MODEL and any optional integrations
+
+# 5. Run
+ollama serve &
+python -m companion        # terminal REPL
 ```
 
-This now includes the published `dory-memory` package:
-```bash
-pip install 'dory-memory[openai]==0.6.1'
-```
+---
 
-**3. Configure `agent.conf`:**
+## Configuration
+
+All settings live in `agent.conf`:
+
 ```bash
-MODEL="Qwen3-14B-Q4_K_M.gguf"
+# LLM — any model installed in Ollama
+OLLAMA_MODEL="gemma3:12b"
 HOST="127.0.0.1"
-PORT="59086"
-API_KEY="your-key-here"
-CTX_SIZE="4096"
-N_GPU_LAYERS="99"          # 0 for CPU-only
-TELEGRAM_BOT_TOKEN="..."   # optional
-TELEGRAM_OWNER_ID="..."    # your Telegram user ID
-BRAVE_SEARCH_API_KEY="..." # optional
+PORT="11434"
+CTX_SIZE="32768"
+
+# Telegram (optional)
+TELEGRAM_BOT_TOKEN="..."
+TELEGRAM_OWNER_ID="..."        # your Telegram user ID — all others rejected
+
+# Brave Search (optional)
+BRAVE_SEARCH_API_KEY="..."     # $5/month for 1,000 searches
+
+# Vision (optional — uses same Ollama if your model is multimodal)
+VISION_HOST="127.0.0.1"
+VISION_PORT="11434"
+
+# Web UI
+WEB_HOST="0.0.0.0"
+WEB_PORT="7272"
+WEB_PASSWORD="changeme"
+
+# Morning briefing
 BRIEFING_HOUR="8"
-LOCATION="Your City, ST"
-DORY_ENABLED="1"
-DORY_MODE="stable"
+BRIEFING_MINUTE="0"
+LOCATION="Your City, State"
+
+# Dory graph memory (optional — pip install dory-memory)
+DORY_ENABLED="0"
 DORY_DB_PATH="./memories/dory_elwin.db"
+DORY_MODE="stable"             # stable | aggressive | manual
 ```
 
-`DORY_MODE` controls how aggressively Elwin asks Dory to extract and flush:
-- `stable` — safer default for one local llama server
-- `aggressive` — faster memory formation, higher chance of local model contention
-- `manual` — log turns to Dory but avoid automatic flush/extraction pressure
+---
 
-**4. Run:**
+## Running
+
 ```bash
 # Terminal REPL
 python -m companion
 
-# Or start servers + Telegram bot together
-./start-all.sh
+# Web UI at http://localhost:7272
+python -m companion.webapp
+
+# Telegram bot
 python -m companion.telegram_bot
 
-# Or double-click launcher (starts everything, stops on close)
-./Elwin.command
+# All at once (servers + bot)
+./start-all.sh
+
+# Double-click launcher (macOS — starts everything, stops on window close)
+open Elwin.command
 ```
 
-If `DORY_ENABLED` is on and `dory-memory` is not installed, Elwin will start but
-print a warning and fall back to its built-in SQLite memory path.
-
-**5. Install as background service (starts at login):**
+**Install as persistent background service (starts at login):**
 ```bash
 python install.py
-# Uninstall:
-python install.py --uninstall
+python install.py --uninstall   # remove
+```
+
+Check status:
+```bash
+./health.sh
+launchctl list | grep elwin
+tail -f /tmp/com.elwin.bot.log
 ```
 
 ---
 
-## Architecture
+## How Memory Works
 
 ```
-Input (text / image / voice)
-  └─▶ Controller — normalizes to text
-        └─▶ SQLite — save turn + embed
-              └─▶ Context assembly
-                    • System prompt (persona, facts, people, todos)
-                    • Semantic recall (top-5 similar past messages)
-                    • Recent session turns
-                    • Current message
-                  └─▶ LLM (llama-server, streaming)
-                        └─▶ Marker detection
-                              [SEARCH]     → Brave API → second LLM pass
-                              [REMIND]     → launchd plist + DB
-                              [EVENT_ADD]  → DB + prep alert
-                              [TODO_*]     → DB
-                              [CAMERA]     → ffmpeg + vision server
-                              [NOTE]       → DB
-                        └─▶ Response saved + embedded
-                              └─▶ Background fact extraction
+Every turn
+│
+├── User message → embed (384-dim) → store in SQLite
+│
+├── Context assembly
+│   ├── System prompt (persona + people + facts + today's schedule + todos)
+│   ├── Semantic recall — top-5 cosine-similar messages from past sessions
+│   ├── Dory long-term memory (optional graph retrieval)
+│   └── Recent session turns (trimmed oldest-first to fit token budget)
+│
+├── LLM response → stream to frontend → store + embed
+│
+└── Background thread: extract facts + people → store in SQLite
 ```
 
-**Storage:** Single SQLite file (`memories/companion.db`) with WAL mode. Tables: messages, embeddings, facts, people, reminders, events, todos, notes, search_usage.
+Facts are only extracted from things the user explicitly says. Nothing the assistant generates gets stored as ground truth.
 
-**Dory:** Optional second memory layer stored separately at `memories/dory_elwin.db`.
-Elwin mirrors conversation turns into Dory, injects Dory retrieval into prompt
-assembly, and exposes Dory status plus a memory inspector in the web UI.
+**Token budgeting** scales with `CTX_SIZE`:
+- ~25% reserved for response
+- ~17% for system prompt
+- ~12% for semantic memories
+- Remainder for recent conversation turns
 
-**Scheduling:** Native macOS launchd — no polling loops, no cron. Reminders and briefing run as proper system agents.
+---
+
+## Marker Reference
+
+Elwin emits structured markers in its responses to trigger actions. All markers are stripped before display — the user sees only the natural response.
+
+| Marker | Action |
+|--------|--------|
+| `[SEARCH: query]` | Brave web search → second LLM pass with results injected |
+| `[REMIND: YYYY-MM-DD HH:MM \| message]` | Schedule launchd one-shot reminder |
+| `[EVENT_ADD: date time \| end-time \| title]` | Add calendar event + 15-min prep alert |
+| `[TODO_ADD: priority \| content]` | Add task (high / medium / low) |
+| `[TODO_DONE: partial text]` | Mark task done by fuzzy match |
+| `[NOTE: content]` | Save a note |
+| `[CAMERA]` | Capture webcam frame + describe via vision model |
 
 ---
 
 ## CLI Commands
 
 ```
-/image <path>     analyze a local image
-/voice            record a voice message
-/people           list known people
-/facts            list extracted facts
-/schedule         show upcoming events
-/todos            show todo list
-/notes            show saved notes
-/reminders        show pending reminders
-/stats            memory + usage stats
-/usage            search API usage
+/new                       Start a new session
+/image <path> [question]   Describe an image or ask about it
+/voice <path>              Transcribe audio file and chat
+/people                    List known people
+/facts [name]              Show extracted facts
+/reminders                 Pending reminders
+/schedule                  7-day event list
+/todos                     Pending tasks
+/notes                     Recent notes
+/stats                     DB stats + Dory status
+/usage                     Brave Search quota
+/help                      Command list
+/quit                      Exit
+```
+
+---
+
+## Project Structure
+
+```
+companion/
+├── config.py           Agent.conf → constants, token budgets
+├── db.py               SQLite schema + CRUD (9 tables, WAL mode)
+├── embeddings.py       all-MiniLM-L6-v2 + brute-force cosine search
+├── memory.py           Context assembly pipeline
+├── prompts.py          System prompt builder
+├── extractor.py        Background fact extraction (daemon thread)
+├── pipeline.py         Shared LLM pipeline used by all frontends
+├── controller.py       Input normalizer (text / image / voice → text)
+├── llm_client.py       Streaming HTTP to Ollama (pure stdlib urllib)
+├── audio.py            STT via faster-whisper
+├── tts.py              TTS via kokoro-onnx → OGG Opus
+├── vision.py           Image understanding via Ollama multimodal
+├── camera.py           Webcam capture via ffmpeg / avfoundation
+├── brave_search.py     Brave Search API + monthly quota tracking
+├── dory_bridge.py      Optional Dory graph memory integration
+├── reminder.py         [REMIND:] → launchd plist + delivery
+├── schedule.py         [EVENT_ADD / TODO_ADD / NOTE:] handlers
+├── briefing.py         Morning briefing assembly + delivery
+├── fire_reminder.py    launchd entry: deliver reminder at due time
+├── fire_prep.py        launchd entry: 15-min event prep alert
+├── cli.py              Terminal REPL
+├── telegram_bot.py     Telegram bot frontend
+└── webapp.py           aiohttp web UI + SSE streaming
 ```
 
 ---
 
 ## Privacy
 
-- All inference runs locally
-- No telemetry
+- All inference runs locally via Ollama
+- No telemetry, no analytics
 - SQLite database stays on device
 - Brave Search is the only optional external call (web search feature)
 - Weather fetched from wttr.in for morning briefing (no account required)
+
+---
+
+## License
+
+MIT

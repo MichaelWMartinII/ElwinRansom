@@ -19,10 +19,10 @@ def _headers() -> dict[str, str]:
 
 
 def health_check() -> bool:
-    """Return True if llama-server /health returns 200."""
+    """Return True if Ollama is reachable."""
     try:
         req = urllib.request.Request(
-            f"{config.LLM_BASE_URL}/health", headers=_headers()
+            f"{config.LLM_BASE_URL}/api/tags", headers=_headers()
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status == 200
@@ -41,10 +41,14 @@ def stream_chat(
     Thinking mode is disabled — Qwen3's <think> blocks waste context budget.
     """
     body = {
+        "model": config.OLLAMA_MODEL,
         "messages": messages,
         "stream": True,
         "temperature": temperature,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "options": {
+            "num_ctx": config.CTX_SIZE,
+            "think": False,
+        },
     }
     if max_tokens:
         body["max_tokens"] = max_tokens
@@ -90,11 +94,15 @@ def complete_json(
 ) -> str | None:
     """Non-streaming completion for structured extraction. Returns raw text."""
     body = {
+        "model": config.OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "options": {
+            "num_ctx": config.CTX_SIZE,
+            "think": False,
+        },
     }
     data = json.dumps(body).encode()
     req = urllib.request.Request(

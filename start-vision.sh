@@ -54,8 +54,9 @@ LLAMA_ARGS=(
   --mmproj "$MODEL_DIR/$VISION_MMPROJ"
   --host "$VISION_HOST"
   --port "$VISION_PORT"
-  --ctx-size 2048
-  --n-gpu-layers 0
+  --ctx-size 4096
+  --n-gpu-layers 99
+  --flash-attn on
   --parallel 1
 )
 

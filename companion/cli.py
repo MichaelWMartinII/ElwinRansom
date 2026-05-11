@@ -147,9 +147,9 @@ def run():
             print(f"[WARNING] Dory integration unavailable — {reason}")
             print("Install with: pip install 'dory-memory[openai]==0.6.1'\n")
     if not llm_client.health_check():
-        print("[ERROR] Cannot reach llama-server at", end=" ")
-        print(f"{llm_client.config.LLM_BASE_URL}/health")
-        print("Start it with: ./start.sh")
+        print("[ERROR] Cannot reach Ollama at", end=" ")
+        print(config.LLM_BASE_URL)
+        print("Start it with: ollama serve  (or launch Ollama.app)")
         sys.exit(1)
 
     # Load embedding model

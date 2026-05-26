@@ -10,6 +10,7 @@ import asyncio
 import logging
 import sys
 import tempfile
+from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -292,9 +293,12 @@ async def handle_voice(update: Update, context) -> None:
             await file.download_to_drive(tmp_path)
 
             status_msg = await update.message.reply_text("Transcribing...")
-            user_text = await asyncio.to_thread(
-                process_input, InputType.VOICE, "", audio_path=tmp_path
-            )
+            try:
+                user_text = await asyncio.to_thread(
+                    process_input, InputType.VOICE, "", audio_path=tmp_path
+                )
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
 
             if not user_text.strip():
                 await status_msg.edit_text(
@@ -324,17 +328,24 @@ async def handle_voice(update: Update, context) -> None:
         except Exception as e:
             logger.warning("TTS failed: %s", e)
 
-    if voice_path:
-        with open(voice_path, "rb") as f:
-            await update.message.reply_voice(voice=f)
-    else:
-        # TTS unavailable — fall back to text
-        for chunk in _split_message(response):
-            await update.message.reply_text(chunk)
+    try:
+        if voice_path:
+            with open(voice_path, "rb") as f:
+                await update.message.reply_voice(voice=f)
+        else:
+            # TTS unavailable — fall back to text
+            for chunk in _split_message(response):
+                await update.message.reply_text(chunk)
+    finally:
+        if voice_path:
+            Path(voice_path).unlink(missing_ok=True)
 
     if photo_path:
-        with open(photo_path, "rb") as f:
-            await update.message.reply_photo(photo=f, caption=photo_caption)
+        try:
+            with open(photo_path, "rb") as f:
+                await update.message.reply_photo(photo=f, caption=photo_caption)
+        finally:
+            Path(photo_path).unlink(missing_ok=True)
     if remind_confirm:
         await update.message.reply_text(f"✓ {remind_confirm}")
     for confirm in butler_confirms:
@@ -367,9 +378,12 @@ async def handle_photo(update: Update, context) -> None:
             await file.download_to_drive(tmp_path)
 
             status_msg = await update.message.reply_text("Looking at your image...")
-            user_text = await asyncio.to_thread(
-                process_input, InputType.IMAGE, caption, tmp_path
-            )
+            try:
+                user_text = await asyncio.to_thread(
+                    process_input, InputType.IMAGE, caption, tmp_path
+                )
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
 
             await status_msg.edit_text("Thinking...")
             response, remind_confirm, butler_confirms, photo_path, photo_caption = (
@@ -381,8 +395,11 @@ async def handle_photo(update: Update, context) -> None:
     for chunk in _split_message(response):
         await update.message.reply_text(chunk)
     if photo_path:
-        with open(photo_path, "rb") as f:
-            await update.message.reply_photo(photo=f, caption=photo_caption)
+        try:
+            with open(photo_path, "rb") as f:
+                await update.message.reply_photo(photo=f, caption=photo_caption)
+        finally:
+            Path(photo_path).unlink(missing_ok=True)
     if remind_confirm:
         await update.message.reply_text(f"✓ {remind_confirm}")
     for confirm in butler_confirms:

@@ -33,10 +33,13 @@ assistant said, assumed, or embellished. The assistant may hallucinate details â
 ignore everything in the assistant's reply that was not confirmed by the user.
 - Never extract facts about the AI assistant itself.
 - If the user did not clearly state a fact, do not infer or guess it.
+- Be liberal â€” if the user mentions something personal, a preference, a habit, a \
+project, a person, or a life detail, capture it. Err on the side of extracting more.
 - If nothing notable was explicitly stated by the user, return:
 {"people": [], "facts": []}
 
-Return ONLY valid JSON, no other text."""
+You MUST return ONLY a raw JSON object. No markdown fences, no explanation, no \
+preamble. Start your response with { and end with }."""
 
 
 def _run_extraction(

@@ -5,6 +5,8 @@ Outputs OGG Opus for Telegram reply_voice.
 
 Model files live in models/ at the project root (downloaded once).
 Lazy-loads the Kokoro instance on first call so bot startup stays fast.
+
+Callers own the returned OGG path and must unlink it after use.
 """
 
 import logging
@@ -37,7 +39,7 @@ def _get_kokoro():
 def synthesize(text: str) -> str:
     """Synthesize text to speech.
 
-    Returns the path to a temporary OGG Opus file.
+    Returns the path to a temporary OGG Opus file. Caller must unlink it.
     Raises RuntimeError on failure.
     """
     kokoro = _get_kokoro()
@@ -55,21 +57,25 @@ def synthesize(text: str) -> str:
     ogg_tmp = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
     ogg_tmp.close()
 
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-i", wav_tmp.name,
-            "-c:a", "libopus",
-            "-b:a", "64k",
-            "-loglevel", "error",
-            ogg_tmp.name,
-        ],
-        capture_output=True,
-        timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            result.stderr.decode("utf-8", errors="replace").strip()
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", wav_tmp.name,
+                "-c:a", "libopus",
+                "-b:a", "64k",
+                "-loglevel", "error",
+                ogg_tmp.name,
+            ],
+            capture_output=True,
+            timeout=30,
         )
+        if result.returncode != 0:
+            Path(ogg_tmp.name).unlink(missing_ok=True)
+            raise RuntimeError(
+                result.stderr.decode("utf-8", errors="replace").strip()
+            )
+    finally:
+        Path(wav_tmp.name).unlink(missing_ok=True)
 
     return ogg_tmp.name

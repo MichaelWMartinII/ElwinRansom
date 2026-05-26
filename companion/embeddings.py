@@ -1,12 +1,16 @@
 """Local embedding with sentence-transformers + brute-force search."""
 
-import struct
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from . import config, db
 
 _model: SentenceTransformer | None = None
+
+# Embedding cache — reloaded only when new embeddings are added
+_embed_cache: list[tuple[str, bytes]] | None = None
+_embed_version: int = 0
+_embed_cached_version: int = -1
 
 
 def get_model() -> SentenceTransformer:
@@ -33,8 +37,18 @@ def blob_to_vector(blob: bytes) -> np.ndarray:
 
 def embed_and_store(conn, message_id: str, text: str):
     """Embed text and save the vector to the database."""
+    global _embed_version
     vec = embed_text(text)
     db.save_embedding(conn, message_id, vector_to_blob(vec))
+    _embed_version += 1
+
+
+def _get_cached_embeddings(conn) -> list[tuple[str, bytes]]:
+    global _embed_cache, _embed_cached_version
+    if _embed_cache is None or _embed_cached_version != _embed_version:
+        _embed_cache = db.load_all_embeddings(conn)
+        _embed_cached_version = _embed_version
+    return _embed_cache
 
 
 def search_similar(
@@ -45,7 +59,7 @@ def search_similar(
 
     Returns list of dicts with id, role, content, created_at, score.
     """
-    all_embeddings = db.load_all_embeddings(conn)
+    all_embeddings = _get_cached_embeddings(conn)
     if not all_embeddings:
         return []
 

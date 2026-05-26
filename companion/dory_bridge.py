@@ -110,9 +110,15 @@ def _flush_worker() -> None:
         return
     try:
         _last_flush_stats = mem.flush()
+        _flush_errors = 0
     except Exception as exc:
         _flush_errors += 1
-        logger.warning("Dory flush failed: %s", exc)
+        if _flush_errors == 1:
+            logger.error("Dory flush failed — memories are not persisting: %s", exc)
+        elif _flush_errors % 5 == 0:
+            logger.error("Dory flush still failing (%d errors): %s", _flush_errors, exc)
+        else:
+            logger.warning("Dory flush failed: %s", exc)
     finally:
         _flush_thread = None
 

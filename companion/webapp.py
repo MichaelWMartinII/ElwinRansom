@@ -14,6 +14,9 @@ import secrets
 import sys
 import tempfile
 import threading
+import time
+from collections import defaultdict
+from datetime import date
 from pathlib import Path
 
 from aiohttp import web
@@ -31,7 +34,42 @@ logger = logging.getLogger(__name__)
 _conn = None
 _llm_lock = asyncio.Lock()
 _session_counter = 0
-_SESSION_TOKENS: set[str] = set()
+_SESSION_TOKENS: dict[str, float] = {}  # token -> expiry timestamp
+_SESSION_TTL = 24 * 3600  # 24 hours
+
+# ── Demo rate limiting ────────────────────────────────────────
+DEMO_LIMIT = 10  # messages per IP per day
+_demo_counts: dict[str, int] = defaultdict(int)
+_demo_date: date = date.today()
+
+def _get_client_ip(request: web.Request) -> str:
+    # Cloudflare passes real IP here
+    return (
+        request.headers.get("CF-Connecting-IP")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or request.remote
+        or "unknown"
+    )
+
+def _demo_remaining(ip: str) -> int:
+    global _demo_counts, _demo_date
+    today = date.today()
+    if today != _demo_date:
+        _demo_counts.clear()
+        _demo_date = today
+    return max(0, DEMO_LIMIT - _demo_counts[ip])
+
+def _demo_consume(ip: str) -> bool:
+    """Returns True if allowed, False if limit reached."""
+    global _demo_counts, _demo_date
+    today = date.today()
+    if today != _demo_date:
+        _demo_counts.clear()
+        _demo_date = today
+    if _demo_counts[ip] >= DEMO_LIMIT:
+        return False
+    _demo_counts[ip] += 1
+    return True
 
 _STATIC = Path(__file__).parent / "static"
 
@@ -60,18 +98,21 @@ async def _sse_send(resp: web.StreamResponse, data: dict) -> None:
 
 # ── Auth middleware ───────────────────────────────────────────
 
-_PUBLIC_PATHS = {"/", "/api/auth"}
+_PUBLIC_PATHS = {"/", "/api/auth", "/demo"}
 
 
 @web.middleware
 async def _auth_middleware(request: web.Request, handler):
     path = request.path
-    # Static files and the index page are always public
-    if not path.startswith("/api/") or path in _PUBLIC_PATHS:
+    # Static files, the index page, and demo routes are always public
+    if not path.startswith("/api/") or path in _PUBLIC_PATHS or path.startswith("/api/demo/"):
         return await handler(request)
     # API routes require a valid session token
     token = request.headers.get("X-Session-Token") or request.cookies.get("session")
-    if not token or token not in _SESSION_TOKENS:
+    expiry = _SESSION_TOKENS.get(token) if token else None
+    if not expiry or time.time() > expiry:
+        if token and token in _SESSION_TOKENS:
+            del _SESSION_TOKENS[token]
         raise web.HTTPUnauthorized(reason="Invalid or missing session token")
     return await handler(request)
 
@@ -91,7 +132,7 @@ async def api_auth(request: web.Request) -> web.Response:
         raise web.HTTPUnauthorized(reason="Invalid password")
 
     token = secrets.token_hex(32)
-    _SESSION_TOKENS.add(token)
+    _SESSION_TOKENS[token] = time.time() + _SESSION_TTL
 
     resp = web.json_response({"ok": True, "token": token})
     secure = bool(config.TLS_CERT_PATH)
@@ -136,7 +177,12 @@ async def _run_pipeline_streaming(sse_resp: web.StreamResponse, user_text: str) 
         threading.Thread(target=_produce_pass1, daemon=True).start()
 
         while True:
-            item = await token_queue.get()
+            try:
+                item = await asyncio.wait_for(token_queue.get(), timeout=60.0)
+            except asyncio.TimeoutError:
+                await _sse_send(sse_resp, {"type": "error", "content": "Response timed out."})
+                await _sse_send(sse_resp, {"type": "done"})
+                return
             if item is None:
                 break
             if isinstance(item, tuple):  # error sentinel
@@ -178,7 +224,12 @@ async def _run_pipeline_streaming(sse_resp: web.StreamResponse, user_text: str) 
                 threading.Thread(target=_produce_pass2, daemon=True).start()
 
                 while True:
-                    tok = await pass2_queue.get()
+                    try:
+                        tok = await asyncio.wait_for(pass2_queue.get(), timeout=60.0)
+                    except asyncio.TimeoutError:
+                        await _sse_send(sse_resp, {"type": "error", "content": "Search response timed out."})
+                        await _sse_send(sse_resp, {"type": "done"})
+                        return
                     if tok is None:
                         break
                     pass2_tokens.append(tok)
@@ -218,13 +269,16 @@ async def _run_pipeline_streaming(sse_resp: web.StreamResponse, user_text: str) 
                 photo_path, photo_caption = await asyncio.to_thread(
                     _capture_and_describe, user_text
                 )
-                with open(photo_path, "rb") as f:
-                    photo_b64 = base64.b64encode(f.read()).decode()
-                await _sse_send(sse_resp, {
-                    "type": "photo",
-                    "src": f"data:image/jpeg;base64,{photo_b64}",
-                    "caption": photo_caption or "",
-                })
+                try:
+                    with open(photo_path, "rb") as f:
+                        photo_b64 = base64.b64encode(f.read()).decode()
+                    await _sse_send(sse_resp, {
+                        "type": "photo",
+                        "src": f"data:image/jpeg;base64,{photo_b64}",
+                        "caption": photo_caption or "",
+                    })
+                finally:
+                    Path(photo_path).unlink(missing_ok=True)
             except Exception as e:
                 logger.warning("Camera capture failed: %s", e)
 
@@ -278,6 +332,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
 
 async def api_upload_voice(request: web.Request) -> web.StreamResponse:
     sse_resp = await _sse_start(request)
+    tmp_path = None
 
     try:
         reader = await request.multipart()
@@ -313,6 +368,9 @@ async def api_upload_voice(request: web.Request) -> web.StreamResponse:
             await _sse_send(sse_resp, {"type": "done"})
         except Exception:
             pass
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
     return sse_resp
 
@@ -321,10 +379,10 @@ async def api_upload_voice(request: web.Request) -> web.StreamResponse:
 
 async def api_upload_image(request: web.Request) -> web.StreamResponse:
     sse_resp = await _sse_start(request)
+    image_path = None
 
     try:
         reader = await request.multipart()
-        image_path = None
         caption = ""
 
         async for field in reader:
@@ -359,6 +417,84 @@ async def api_upload_image(request: web.Request) -> web.StreamResponse:
             await _sse_send(sse_resp, {"type": "done"})
         except Exception:
             pass
+    finally:
+        if image_path:
+            Path(image_path).unlink(missing_ok=True)
+
+    return sse_resp
+
+
+# ── Document upload ───────────────────────────────────────────
+
+async def api_upload_file(request: web.Request) -> web.StreamResponse:
+    sse_resp = await _sse_start(request)
+    tmp_path = None
+
+    try:
+        reader = await request.multipart()
+        caption = ""
+        filename = "document"
+
+        async for field in reader:
+            if field.name == "file":
+                filename = field.filename or "document"
+                suffix = Path(filename).suffix.lower() or ".txt"
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                    tmp_path = tmp.name
+                    while True:
+                        chunk = await field.read_chunk(16384)
+                        if not chunk:
+                            break
+                        tmp.write(chunk)
+            elif field.name == "caption":
+                caption = (await field.read(decode=True)).decode("utf-8", errors="replace")
+
+        if not tmp_path:
+            await _sse_send(sse_resp, {"type": "error", "content": "No file received."})
+            await _sse_send(sse_resp, {"type": "done"})
+            return sse_resp
+
+        await _sse_send(sse_resp, {"type": "status", "content": f"Reading {filename}…"})
+
+        suffix = Path(filename).suffix.lower()
+        if suffix == ".pdf":
+            import pypdf
+            pdf = pypdf.PdfReader(tmp_path)
+            file_text = "\n".join(p.extract_text() or "" for p in pdf.pages).strip()
+        elif suffix == ".csv":
+            import csv
+            with open(tmp_path, newline="", encoding="utf-8", errors="replace") as f:
+                rows = list(csv.reader(f))
+            file_text = "\n".join(", ".join(row) for row in rows[:300])
+        else:
+            with open(tmp_path, encoding="utf-8", errors="replace") as f:
+                file_text = f.read(60_000)
+
+        if not file_text.strip():
+            await _sse_send(sse_resp, {"type": "error", "content": "Could not extract text from document."})
+            await _sse_send(sse_resp, {"type": "done"})
+            return sse_resp
+
+        if len(file_text) > 8000:
+            file_text = file_text[:8000] + "\n…[truncated]"
+
+        user_text = f"[Document: {filename}]\n{file_text}"
+        if caption:
+            user_text = f"{caption}\n\n{user_text}"
+
+        async with _llm_lock:
+            await _run_pipeline_streaming(sse_resp, user_text)
+
+    except Exception as e:
+        logger.exception("Document upload error: %s", e)
+        try:
+            await _sse_send(sse_resp, {"type": "error", "content": str(e)})
+            await _sse_send(sse_resp, {"type": "done"})
+        except Exception:
+            pass
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
 
     return sse_resp
 
@@ -431,6 +567,26 @@ async def api_dory_memories(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
+async def api_conversations(request: web.Request) -> web.Response:
+    rows = _conn.execute(
+        """
+        SELECT
+            session_id,
+            MIN(created_at) AS started_at,
+            MAX(created_at) AS last_at,
+            COUNT(*) AS msg_count,
+            (SELECT content FROM messages m2
+             WHERE m2.session_id = m.session_id AND m2.role = 'user'
+             ORDER BY m2.created_at ASC LIMIT 1) AS preview
+        FROM messages m
+        GROUP BY session_id
+        ORDER BY last_at DESC
+        LIMIT 30
+        """
+    ).fetchall()
+    return web.json_response([dict(r) for r in rows])
+
+
 async def api_briefing(request: web.Request) -> web.StreamResponse:
     sse_resp = await _sse_start(request)
     from . import briefing
@@ -463,6 +619,86 @@ async def api_push_vapid_key(request: web.Request) -> web.Response:
     return web.json_response({"public_key": config.VAPID_PUBLIC_KEY})
 
 
+# ── Demo endpoints ────────────────────────────────────────────
+
+_DEMO_SYSTEM = (
+    "You are Elwin, a local AI companion built by Michael Martin. "
+    "You run entirely on local hardware — no cloud, no subscriptions. "
+    "This is a portfolio demo. Be friendly, conversational, and concise. "
+    "You can discuss your capabilities, answer questions, or just chat. "
+    "Do not make up personal information about Michael or the user."
+)
+
+async def demo_index(request: web.Request) -> web.FileResponse:
+    return web.FileResponse(_STATIC / "demo.html")
+
+async def api_demo_status(request: web.Request) -> web.Response:
+    ip = _get_client_ip(request)
+    return web.json_response({"remaining": _demo_remaining(ip), "limit": DEMO_LIMIT})
+
+async def api_demo_chat(request: web.Request) -> web.StreamResponse:
+    ip = _get_client_ip(request)
+
+    if not _demo_consume(ip):
+        sse_resp = await _sse_start(request)
+        await _sse_send(sse_resp, {
+            "type": "error",
+            "content": f"Demo limit reached ({DEMO_LIMIT} messages per day). Come back tomorrow!"
+        })
+        await _sse_send(sse_resp, {"type": "done"})
+        return sse_resp
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(reason="Invalid JSON")
+
+    user_text = (data.get("text") or "").strip()
+    history = data.get("history") or []  # list of {role, content}
+    if not user_text:
+        raise web.HTTPBadRequest(reason="text required")
+
+    # Build messages: system + recent history (last 10 turns) + new user message
+    messages = [{"role": "system", "content": _DEMO_SYSTEM}]
+    for turn in history[-10:]:
+        if turn.get("role") in ("user", "assistant") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_text})
+
+    sse_resp = await _sse_start(request)
+    remaining = _demo_remaining(ip)
+    await _sse_send(sse_resp, {"type": "remaining", "content": remaining})
+
+    loop = asyncio.get_running_loop()
+    token_queue: asyncio.Queue = asyncio.Queue()
+
+    def _produce():
+        try:
+            for tok in llm_client.stream_chat(messages):
+                asyncio.run_coroutine_threadsafe(token_queue.put(tok), loop)
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(token_queue.put(("error", str(exc))), loop)
+        asyncio.run_coroutine_threadsafe(token_queue.put(None), loop)
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    while True:
+        try:
+            item = await asyncio.wait_for(token_queue.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            await _sse_send(sse_resp, {"type": "error", "content": "Response timed out."})
+            break
+        if item is None:
+            break
+        if isinstance(item, tuple):
+            await _sse_send(sse_resp, {"type": "error", "content": item[1]})
+            break
+        await _sse_send(sse_resp, {"type": "token", "content": item})
+
+    await _sse_send(sse_resp, {"type": "done"})
+    return sse_resp
+
+
 # ── Static / index ────────────────────────────────────────────
 
 async def index(request: web.Request) -> web.FileResponse:
@@ -475,13 +711,18 @@ def _make_app() -> web.Application:
     app = web.Application(middlewares=[_auth_middleware])
 
     app.router.add_get("/", index)
+    app.router.add_get("/demo",                    demo_index)
     app.router.add_static("/static", _STATIC)
+
+    app.router.add_get( "/api/demo/status",        api_demo_status)
+    app.router.add_post("/api/demo/chat",          api_demo_chat)
 
     app.router.add_post("/api/auth",               api_auth)
     app.router.add_get( "/api/me",                 api_me)
     app.router.add_post("/api/chat",               api_chat)
     app.router.add_post("/api/upload/voice",       api_upload_voice)
     app.router.add_post("/api/upload/image",       api_upload_image)
+    app.router.add_post("/api/upload/file",        api_upload_file)
     app.router.add_post("/api/new",                api_new)
     app.router.add_get( "/api/schedule",           api_schedule)
     app.router.add_get( "/api/todos",              api_todos)
@@ -489,6 +730,7 @@ def _make_app() -> web.Application:
     app.router.add_get( "/api/usage",              api_usage)
     app.router.add_get( "/api/status",             api_status)
     app.router.add_get( "/api/dory/memories",      api_dory_memories)
+    app.router.add_get( "/api/conversations",      api_conversations)
     app.router.add_get( "/api/briefing",           api_briefing)
     app.router.add_post("/api/push/subscribe",     api_push_subscribe)
     app.router.add_get( "/api/push/vapid-public-key", api_push_vapid_key)

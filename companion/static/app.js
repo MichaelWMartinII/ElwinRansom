@@ -1,46 +1,32 @@
-/* Elwin Ransom — web UI
- *
- * Sections:
- *  1. Auth
- *  2. Service worker registration
- *  3. SSE streaming helper (fetch-based, works with POST)
- *  4. Message rendering
- *  5. Chat pipeline (text)
- *  6. Voice recording (hold-to-record)
- *  7. Image upload
- *  8. Sidebar actions
- *  9. Web Push setup
- * 10. UI helpers (textarea auto-resize, Enter to send)
- */
-
 'use strict';
 
 // ── DOM refs ─────────────────────────────────────────────────
-const authScreen   = document.getElementById('auth-screen');
-const authForm     = document.getElementById('auth-form');
+const authScreen    = document.getElementById('auth-screen');
+const authForm      = document.getElementById('auth-form');
 const passwordInput = document.getElementById('password-input');
-const authError    = document.getElementById('auth-error');
-const app          = document.getElementById('app');
-const messages     = document.getElementById('messages');
-const messageInput = document.getElementById('message-input');
-const sendBtn      = document.getElementById('send-btn');
-const micBtn       = document.getElementById('mic-btn');
-const attachBtn    = document.getElementById('attach-btn');
-const fileInput    = document.getElementById('file-input');
-const menuBtn      = document.getElementById('menu-btn');
-const closeSidebar = document.getElementById('close-sidebar-btn');
-const sidebarNav   = document.getElementById('sidebar-nav');
-const overlay      = document.getElementById('sidebar-overlay');
-const statusDot    = document.getElementById('status-dot');
-const statusText   = document.getElementById('status-text');
-const presenceSession = document.getElementById('presence-session');
-const presenceNext = document.getElementById('presence-next');
-const presenceFocus = document.getElementById('presence-focus');
-const presenceDory = document.getElementById('presence-dory');
-const infoPanel    = document.getElementById('info-panel');
-const infoTitle    = document.getElementById('info-title');
-const infoContent  = document.getElementById('info-content');
-const infoClose    = document.getElementById('info-close');
+const authError     = document.getElementById('auth-error');
+const app           = document.getElementById('app');
+const messages      = document.getElementById('messages');
+const messageInput  = document.getElementById('message-input');
+const sendBtn       = document.getElementById('send-btn');
+const micBtn        = document.getElementById('mic-btn');
+const attachBtn     = document.getElementById('attach-btn');
+const fileInput     = document.getElementById('file-input');
+const menuBtn       = document.getElementById('menu-btn');
+const closeSidebar  = document.getElementById('close-sidebar-btn');
+const sidebarNav    = document.getElementById('sidebar-nav');
+const overlay       = document.getElementById('sidebar-overlay');
+const statusDot     = document.getElementById('status-dot');
+const statusText    = document.getElementById('status-text');
+const infoPanel     = document.getElementById('info-panel');
+const infoTitle     = document.getElementById('info-title');
+const infoContent   = document.getElementById('info-content');
+const infoClose     = document.getElementById('info-close');
+const ttsBtn        = document.getElementById('tts-btn');
+const ttsIconOn     = document.getElementById('tts-icon-on');
+const ttsIconOff    = document.getElementById('tts-icon-off');
+const sendIcon      = document.getElementById('send-icon');
+const stopIcon      = document.getElementById('stop-icon');
 
 // ── 1. Auth ──────────────────────────────────────────────────
 let sessionToken = localStorage.getItem('elwin_token') || '';
@@ -49,8 +35,13 @@ async function checkAuth() {
   if (!sessionToken) { showAuth(); return; }
   try {
     const r = await fetch('/api/me', { headers: { 'X-Session-Token': sessionToken } });
-    if (r.ok) { showApp(); } else { localStorage.removeItem('elwin_token'); sessionToken = ''; showAuth(); }
+    if (r.ok) { showApp(); } else { clearToken(); showAuth(); }
   } catch { showAuth(); }
+}
+
+function clearToken() {
+  localStorage.removeItem('elwin_token');
+  sessionToken = '';
 }
 
 function showAuth() {
@@ -67,12 +58,11 @@ function showApp() {
 authForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   authError.textContent = '';
-  const pw = passwordInput.value;
   try {
     const r = await fetch('/api/auth', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pw }),
+      body: JSON.stringify({ password: passwordInput.value }),
     });
     if (r.ok) {
       const data = await r.json();
@@ -90,17 +80,51 @@ authForm.addEventListener('submit', async (e) => {
 
 // ── 2. Service worker ─────────────────────────────────────────
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/static/sw.js', { scope: '/' }).catch(console.warn);
+  navigator.serviceWorker.register('/static/sw.js', { scope: '/' }).catch(() => {});
 }
 
-// ── 3. SSE streaming helper ───────────────────────────────────
-/**
- * postAndStream — send a request and consume the SSE stream.
- * @param {string} url
- * @param {object|FormData|null} body — plain object → JSON; FormData → multipart; null → no body
- * @param {{ onToken, onEvent, method }} opts
- */
+// ── 3. TTS ───────────────────────────────────────────────────
+let ttsEnabled = localStorage.getItem('elwin_tts') === 'true';
+
+function updateTtsButton() {
+  ttsBtn.classList.toggle('active', ttsEnabled);
+  ttsIconOn.style.display  = ttsEnabled ? '' : 'none';
+  ttsIconOff.style.display = ttsEnabled ? 'none' : '';
+}
+
+updateTtsButton();
+
+ttsBtn.addEventListener('click', () => {
+  ttsEnabled = !ttsEnabled;
+  localStorage.setItem('elwin_tts', ttsEnabled);
+  updateTtsButton();
+  if (!ttsEnabled) window.speechSynthesis?.cancel();
+});
+
+function speak(text) {
+  if (!ttsEnabled || !window.speechSynthesis || !text.trim()) return;
+  window.speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text.trim());
+  utt.rate = 1.0;
+  utt.pitch = 1.0;
+  // Pick a natural English voice if available
+  const voices = window.speechSynthesis.getVoices();
+  const voice = voices.find(v => v.lang.startsWith('en') && /male|daniel|alex|fred/i.test(v.name))
+    || voices.find(v => v.lang === 'en-US')
+    || voices.find(v => v.lang.startsWith('en'))
+    || null;
+  if (voice) utt.voice = voice;
+  window.speechSynthesis.speak(utt);
+}
+
+// ── 4. SSE streaming helper ───────────────────────────────────
+let _currentAbort = null;
+
 async function postAndStream(url, body, { onToken, onEvent, method = 'POST' } = {}) {
+  if (_currentAbort) _currentAbort.abort();
+  const ctrl = new AbortController();
+  _currentAbort = ctrl;
+
   const headers = { 'X-Session-Token': sessionToken };
   let fetchBody;
 
@@ -111,9 +135,16 @@ async function postAndStream(url, body, { onToken, onEvent, method = 'POST' } = 
     fetchBody = JSON.stringify(body);
   }
 
-  const resp = await fetch(url, { method, headers, body: fetchBody });
+  let resp;
+  try {
+    resp = await fetch(url, { method, headers, body: fetchBody, signal: ctrl.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    throw e;
+  }
+
   if (!resp.ok) {
-    if (resp.status === 401) { localStorage.removeItem('elwin_token'); sessionToken = ''; showAuth(); }
+    if (resp.status === 401) { clearToken(); showAuth(); }
     throw new Error(`HTTP ${resp.status}`);
   }
 
@@ -121,27 +152,30 @@ async function postAndStream(url, body, { onToken, onEvent, method = 'POST' } = 
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop(); // last potentially incomplete line
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const data = JSON.parse(line.slice(6));
-        if (data.type === 'token' && onToken) {
-          onToken(data.content);
-        } else if (onEvent) {
-          onEvent(data);
-        }
-      } catch { /* skip malformed */ }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === 'token' && onToken) onToken(data.content);
+          else if (onEvent) onEvent(data);
+        } catch { /* skip malformed */ }
+      }
     }
+  } catch (e) {
+    if (e.name !== 'AbortError') throw e;
+  } finally {
+    _currentAbort = null;
   }
 }
 
-// ── 4. Message rendering ──────────────────────────────────────
+// ── 5. Message rendering ──────────────────────────────────────
 function appendMessage(role, text) {
   const div = document.createElement('div');
   div.className = `message ${role}`;
@@ -168,10 +202,15 @@ function appendSystemMsg(text) {
 function appendBotBubble() {
   const div = document.createElement('div');
   div.className = 'message bot';
+
+  const label = document.createElement('div');
+  label.className = 'bot-label';
+  label.textContent = 'Elwin';
+  div.appendChild(label);
+
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
 
-  // Typing indicator shown until first token arrives
   const dots = document.createElement('div');
   dots.className = 'typing-dots';
   dots.innerHTML = '<span></span><span></span><span></span>';
@@ -186,19 +225,17 @@ function appendBotBubble() {
     if (!dotsRemoved) { dots.remove(); dotsRemoved = true; }
   }
 
-  // textSpan holds streamed text
   const textSpan = document.createElement('span');
   textSpan.className = 'bubble-text';
   bubble.appendChild(textSpan);
 
-  return { bubble, textSpan, removeDots };
+  return { div, bubble, textSpan, removeDots };
 }
 
 function appendConfirmChip(text, parentBubble) {
   const chip = document.createElement('div');
   chip.className = 'confirm-chip';
   chip.textContent = text;
-  // Append to last bot bubble if provided, else as its own message
   if (parentBubble) {
     parentBubble.appendChild(chip);
   } else {
@@ -216,18 +253,126 @@ function scrollToBottom() {
   messages.scrollTop = messages.scrollHeight;
 }
 
-// ── 5. Chat pipeline ──────────────────────────────────────────
+// ── 6. Chat pipeline ──────────────────────────────────────────
 let busy = false;
+
+function setBusy(val) {
+  busy = val;
+  if (val) {
+    sendBtn.disabled = false;
+    sendBtn.classList.add('stop');
+    sendBtn.setAttribute('aria-label', 'Stop');
+    sendIcon.style.display = 'none';
+    stopIcon.style.display = '';
+  } else {
+    sendBtn.classList.remove('stop');
+    sendBtn.setAttribute('aria-label', 'Send');
+    sendIcon.style.display = '';
+    stopIcon.style.display = 'none';
+    sendBtn.disabled = !messageInput.value.trim();
+  }
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function inline(text) {
+  let out = escHtml(text);
+  out = out.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`);
+  out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g,
+    (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+  return out;
+}
+
+function renderMarkdown(raw) {
+  const codeBlocks = [];
+  let text = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code class="lang-${escHtml(lang || 'text')}">${escHtml(code.trimEnd())}</code></pre>`);
+    return `\x00CODE${idx}\x00`;
+  });
+
+  const lines = text.split('\n');
+  const out = [];
+  let listType = null;
+
+  function flushList() {
+    if (listType) { out.push(`</${listType}>`); listType = null; }
+  }
+
+  for (const line of lines) {
+    const codePlaceholder = line.trim().match(/^\x00CODE(\d+)\x00$/);
+    if (codePlaceholder) { flushList(); out.push(codeBlocks[+codePlaceholder[1]]); continue; }
+
+    const h = line.match(/^(#{1,3}) (.+)/);
+    if (h) { flushList(); const lv = h[1].length; out.push(`<h${lv}>${inline(h[2])}</h${lv}>`); continue; }
+
+    if (/^---+$/.test(line.trim())) { flushList(); out.push('<hr>'); continue; }
+
+    const bq = line.match(/^> (.*)/);
+    if (bq) { flushList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
+
+    const ul = line.match(/^[-*+] (.+)/);
+    if (ul) {
+      if (listType !== 'ul') { flushList(); out.push('<ul>'); listType = 'ul'; }
+      out.push(`<li>${inline(ul[1])}</li>`); continue;
+    }
+
+    const ol = line.match(/^\d+\. (.+)/);
+    if (ol) {
+      if (listType !== 'ol') { flushList(); out.push('<ol>'); listType = 'ol'; }
+      out.push(`<li>${inline(ol[1])}</li>`); continue;
+    }
+
+    if (!line.trim()) { flushList(); continue; }
+
+    flushList();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+
+  flushList();
+  return out.join('\n');
+}
+
+function finalizeResponse(msgDiv, textSpan, rawText) {
+  const bubble = textSpan.parentElement;
+  textSpan.remove();
+  if (!rawText.trim()) {
+    bubble.querySelector('.typing-dots')?.remove();
+    bubble.innerHTML = '<span style="color:var(--text-dim);font-size:0.85em;font-style:italic;">stopped</span>';
+    return;
+  }
+  bubble.innerHTML = renderMarkdown(rawText);
+  bubble.classList.add('rendered');
+
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg> Copy`;
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(rawText).then(() => {
+      copyBtn.classList.add('copied');
+      copyBtn.textContent = 'Copied';
+      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg> Copy`; }, 1800);
+    });
+  });
+  msgDiv.appendChild(copyBtn);
+}
 
 async function sendMessage(text) {
   if (!text.trim() || busy) return;
-  busy = true;
-  sendBtn.disabled = true;
+  setBusy(true);
   messageInput.value = '';
   adjustTextareaHeight();
 
   appendMessage('user', text);
-  const { bubble, textSpan, removeDots } = appendBotBubble();
+  const { div, bubble, textSpan, removeDots } = appendBotBubble();
   let streamedText = '';
 
   setStatus('Thinking…', true);
@@ -241,22 +386,21 @@ async function sendMessage(text) {
         scrollToBottom();
       },
       onEvent(data) {
-        handleStreamEvent(data, bubble, textSpan,
-          () => { streamedText = ''; textSpan.textContent = ''; });
+        handleStreamEvent(data, bubble, textSpan, () => { streamedText = ''; textSpan.textContent = ''; });
       },
     });
+    speak(streamedText);
+    finalizeResponse(div, textSpan, streamedText);
   } catch (e) {
     removeDots();
     textSpan.textContent = `Error: ${e.message}`;
   } finally {
-    busy = false;
-    sendBtn.disabled = false;
+    setBusy(false);
     setStatus('');
     refreshPresence().catch(() => {});
   }
 }
 
-/** Common event handler for all SSE streams. */
 function handleStreamEvent(data, bubble, textSpan, onClear) {
   switch (data.type) {
     case 'clear':
@@ -269,16 +413,10 @@ function handleStreamEvent(data, bubble, textSpan, onClear) {
       appendMessage('user', data.content);
       break;
     case 'reminder_set':
-      appendConfirmChip(`✓ ${data.content}`, bubble);
-      break;
     case 'event_set':
-      appendConfirmChip(`✓ ${data.content}`, bubble);
-      break;
     case 'todo_added':
-      appendConfirmChip(`✓ ${data.content}`, bubble);
-      break;
     case 'note_saved':
-      appendConfirmChip(`✓ ${data.content}`, bubble);
+      appendConfirmChip(data.content, bubble);
       break;
     case 'photo': {
       const img = document.createElement('img');
@@ -297,13 +435,13 @@ function handleStreamEvent(data, bubble, textSpan, onClear) {
   }
 }
 
-// ── 6. Voice recording ────────────────────────────────────────
+// ── 7. Voice recording (tap to start, tap to stop) ────────────
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 
 async function startRecording() {
-  if (isRecording || busy) return;
+  if (busy) return;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
@@ -313,7 +451,8 @@ async function startRecording() {
     mediaRecorder.start();
     isRecording = true;
     micBtn.classList.add('recording');
-  } catch (e) {
+    setStatus('Recording…', true);
+  } catch {
     appendSystemMsg('Microphone access denied.');
   }
 }
@@ -322,20 +461,28 @@ function stopRecording() {
   if (!isRecording || !mediaRecorder) return;
   isRecording = false;
   micBtn.classList.remove('recording');
+  setStatus('');
   mediaRecorder.stop();
-  mediaRecorder.stream.getTracks().forEach((t) => t.stop());
+  mediaRecorder.stream.getTracks().forEach(t => t.stop());
 }
+
+micBtn.addEventListener('click', () => {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+});
 
 async function sendVoice() {
   if (!audioChunks.length) return;
-  busy = true;
-  sendBtn.disabled = true;
+  setBusy(true);
 
   const blob = new Blob(audioChunks, { type: 'audio/webm' });
   const formData = new FormData();
   formData.append('audio', blob, 'recording.webm');
 
-  const { bubble, textSpan, removeDots } = appendBotBubble();
+  const { div, bubble, textSpan, removeDots } = appendBotBubble();
   let streamedText = '';
   setStatus('Transcribing…', true);
 
@@ -349,27 +496,22 @@ async function sendVoice() {
       },
       onEvent(data) {
         if (data.type === 'transcription') removeDots();
-        handleStreamEvent(data, bubble, textSpan,
-          () => { streamedText = ''; textSpan.textContent = ''; });
+        handleStreamEvent(data, bubble, textSpan, () => { streamedText = ''; textSpan.textContent = ''; });
       },
     });
+    speak(streamedText);
+    finalizeResponse(div, textSpan, streamedText);
   } catch (e) {
     removeDots();
     textSpan.textContent = `Error: ${e.message}`;
   } finally {
-    busy = false;
-    sendBtn.disabled = false;
+    setBusy(false);
     setStatus('');
     refreshPresence().catch(() => {});
   }
 }
 
-// Use pointer events so hold works on touch and mouse
-micBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); startRecording(); });
-micBtn.addEventListener('pointerup',   stopRecording);
-micBtn.addEventListener('pointercancel', stopRecording);
-
-// ── 7. Image upload ───────────────────────────────────────────
+// ── 8. File upload (image + documents) ───────────────────────
 attachBtn.addEventListener('click', () => fileInput.click());
 
 fileInput.addEventListener('change', async () => {
@@ -377,20 +519,61 @@ fileInput.addEventListener('change', async () => {
   if (!file) return;
   fileInput.value = '';
   if (busy) return;
-  busy = true;
-  sendBtn.disabled = true;
+
+  const isDoc = file.type === 'application/pdf'
+    || file.type.startsWith('text/')
+    || /\.(pdf|txt|csv|md)$/i.test(file.name);
 
   const caption = messageInput.value.trim();
   messageInput.value = '';
   adjustTextareaHeight();
 
+  setBusy(true);
+
+  if (isDoc) {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (caption) formData.append('caption', caption);
+
+    if (caption) appendMessage('user', caption);
+    appendSystemMsg(`Reading ${file.name}…`);
+    const { div, bubble, textSpan, removeDots } = appendBotBubble();
+    let streamedText = '';
+    setStatus('Processing document…', true);
+
+    try {
+      await postAndStream('/api/upload/file', formData, {
+        onToken(tok) {
+          removeDots();
+          streamedText += tok;
+          textSpan.textContent = streamedText;
+          scrollToBottom();
+        },
+        onEvent(data) {
+          handleStreamEvent(data, bubble, textSpan, () => { streamedText = ''; textSpan.textContent = ''; });
+        },
+      });
+      speak(streamedText);
+      finalizeResponse(div, textSpan, streamedText);
+    } catch (e) {
+      removeDots();
+      textSpan.textContent = `Error: ${e.message}`;
+    } finally {
+      setBusy(false);
+      setStatus('');
+      refreshPresence().catch(() => {});
+    }
+    return;
+  }
+
+  // Image flow
   const formData = new FormData();
   formData.append('image', file);
   if (caption) formData.append('caption', caption);
 
   if (caption) appendMessage('user', caption);
   appendSystemMsg('Looking at your image…');
-  const { bubble, textSpan, removeDots } = appendBotBubble();
+  const { div, bubble, textSpan, removeDots } = appendBotBubble();
   let streamedText = '';
   setStatus('Processing image…', true);
 
@@ -403,22 +586,22 @@ fileInput.addEventListener('change', async () => {
         scrollToBottom();
       },
       onEvent(data) {
-        handleStreamEvent(data, bubble, textSpan,
-          () => { streamedText = ''; textSpan.textContent = ''; });
+        handleStreamEvent(data, bubble, textSpan, () => { streamedText = ''; textSpan.textContent = ''; });
       },
     });
+    speak(streamedText);
+    finalizeResponse(div, textSpan, streamedText);
   } catch (e) {
     removeDots();
     textSpan.textContent = `Error: ${e.message}`;
   } finally {
-    busy = false;
-    sendBtn.disabled = false;
+    setBusy(false);
     setStatus('');
     refreshPresence().catch(() => {});
   }
 });
 
-// ── 8. Sidebar ────────────────────────────────────────────────
+// ── 9. Sidebar ────────────────────────────────────────────────
 function openSidebar() {
   sidebarNav.classList.add('open');
   overlay.classList.add('visible');
@@ -454,33 +637,19 @@ function truncateLine(text, fallback) {
 
 async function refreshPresence() {
   const status = await apiFetch('/api/status');
-  presenceSession.textContent = truncateLine(status.session, 'unknown');
-  presenceNext.textContent = status.events.length
-    ? truncateLine(`${new Date(status.events[0].start_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} ${status.events[0].title}`, 'No upcoming events')
-    : 'No upcoming events';
 
-  const highTodo = status.todos.find((t) => t.priority === 'high') || status.todos[0];
-  const fallbackFocus = truncateLine(
-    (status.briefing_preview || '').split('\n').find((line) => line.startsWith('Prep ') || line.startsWith('Take ') || line.startsWith('Handle ')),
-    'No active tasks'
-  );
-  presenceFocus.textContent = highTodo
-    ? truncateLine(highTodo.content, 'No active tasks')
-    : fallbackFocus;
+  const highTodo = status.todos.find(t => t.priority === 'high') || status.todos[0];
+  const nextEvent = status.events[0];
 
-  if (status.dory && status.dory.enabled) {
-    const g = status.dory.graph || {};
-    presenceDory.textContent = `${g.nodes || 0} nodes / ${g.core_nodes || 0} core`;
-  } else {
-    presenceDory.textContent = truncateLine(status.dory?.reason, 'offline');
-  }
+  // Update status dot if everything is quiet
+  if (!busy) setStatus('');
 }
 
 document.getElementById('btn-new').addEventListener('click', async () => {
   closeSidebarFn();
   try {
     await fetch('/api/new', { method: 'POST', headers: { 'X-Session-Token': sessionToken } });
-    appendSystemMsg('— new conversation —');
+    appendSystemMsg('New conversation started.');
   } catch (e) {
     appendSystemMsg(`Error: ${e.message}`);
   }
@@ -491,9 +660,9 @@ document.getElementById('btn-schedule').addEventListener('click', async () => {
   try {
     const events = await apiFetch('/api/schedule');
     if (!events.length) { showInfoPanel('Schedule', 'No upcoming events.'); return; }
-    const lines = events.map((ev) => {
+    const lines = events.map(ev => {
       const start = new Date(ev.start_at).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-      return `• ${start}  ${ev.title}`;
+      return `${start}  ${ev.title}`;
     });
     showInfoPanel('Schedule', lines.join('\n'));
   } catch (e) {
@@ -506,8 +675,8 @@ document.getElementById('btn-todos').addEventListener('click', async () => {
   try {
     const todos = await apiFetch('/api/todos');
     if (!todos.length) { showInfoPanel('Todos', 'No pending todos.'); return; }
-    const pmap = { high: 'H', medium: 'M', low: 'L' };
-    const lines = todos.map((t) => `[${pmap[t.priority] || 'M'}] ${t.content}`);
+    const pmap = { high: 'High', medium: 'Med', low: 'Low' };
+    const lines = todos.map(t => `[${pmap[t.priority] || 'Med'}]  ${t.content}`);
     showInfoPanel('Todos', lines.join('\n'));
   } catch (e) {
     showInfoPanel('Todos', `Error: ${e.message}`);
@@ -519,7 +688,7 @@ document.getElementById('btn-notes').addEventListener('click', async () => {
   try {
     const notes = await apiFetch('/api/notes');
     if (!notes.length) { showInfoPanel('Notes', 'No recent notes.'); return; }
-    showInfoPanel('Notes', notes.map((n) => n.content).join('\n\n'));
+    showInfoPanel('Notes', notes.map(n => n.content).join('\n\n'));
   } catch (e) {
     showInfoPanel('Notes', `Error: ${e.message}`);
   }
@@ -539,20 +708,18 @@ document.getElementById('btn-presence').addEventListener('click', async () => {
   closeSidebarFn();
   try {
     const status = await apiFetch('/api/status');
-    const memories = (status.dory?.top_memories || []).map((m) => `• ${m.content}`);
+    const memories = (status.dory?.top_memories || []).map(m => `  ${m.content}`);
     const lines = [
       `Session: ${status.session}`,
-      `Dory: ${status.dory?.enabled ? 'enabled' : `offline (${status.dory?.reason || 'unknown'})`}`,
+      `Memory: ${status.dory?.enabled ? `${status.dory.graph?.nodes || 0} nodes, ${status.dory.graph?.core_nodes || 0} core` : `offline — ${status.dory?.reason || 'unknown'}`}`,
       '',
       'Briefing preview:',
       status.briefing_preview || 'No briefing available.',
     ];
-    if (memories.length) {
-      lines.push('', 'Top Dory memories:', ...memories);
-    }
-    showInfoPanel('Presence', lines.join('\n'));
+    if (memories.length) lines.push('', 'Top memories:', ...memories);
+    showInfoPanel('Status', lines.join('\n'));
   } catch (e) {
-    showInfoPanel('Presence', `Error: ${e.message}`);
+    showInfoPanel('Status', `Error: ${e.message}`);
   }
 });
 
@@ -565,29 +732,23 @@ document.getElementById('btn-memory').addEventListener('click', async () => {
     ]);
 
     if (!active.enabled) {
-      showInfoPanel('Memory Inspector', `Dory unavailable: ${active.reason || 'unknown error'}`);
+      showInfoPanel('Memory Inspector', `Dory unavailable: ${active.reason || 'unknown'}`);
       return;
     }
 
-    const formatItem = (item) => {
-      const flags = [
-        item.is_core ? 'core' : '',
-        item.type,
-        item.zone,
-        `salience ${item.salience}`,
-      ].filter(Boolean).join(' · ');
-      return `• ${item.content}\n  ${flags}`;
+    const fmt = item => {
+      const flags = [item.is_core ? 'core' : '', item.type, `salience ${item.salience}`].filter(Boolean).join(' · ');
+      return `${item.content}\n  ${flags}`;
     };
 
     const lines = [
-      `Active memories shown: ${active.items.length} / ${active.total}`,
+      `Active memories: ${active.items.length} / ${active.total}`,
       '',
-      'Top active memories:',
-      ...(active.items.length ? active.items.map(formatItem) : ['No active memories.']),
+      ...( active.items.length ? active.items.map(fmt) : ['No active memories.']),
     ];
 
-    if (archived.items && archived.items.length) {
-      lines.push('', 'Archived memories:', ...archived.items.slice(0, 5).map(formatItem));
+    if (archived.items?.length) {
+      lines.push('', 'Archived:', ...archived.items.slice(0, 5).map(fmt));
     }
 
     showInfoPanel('Memory Inspector', lines.join('\n'));
@@ -599,10 +760,9 @@ document.getElementById('btn-memory').addEventListener('click', async () => {
 document.getElementById('btn-briefing').addEventListener('click', async () => {
   closeSidebarFn();
   if (busy) return;
-  busy = true;
-  sendBtn.disabled = true;
+  setBusy(true);
 
-  const { bubble, textSpan, removeDots } = appendBotBubble();
+  const { div, bubble, textSpan, removeDots } = appendBotBubble();
   let streamedText = '';
   setStatus('Assembling briefing…', true);
 
@@ -619,18 +779,35 @@ document.getElementById('btn-briefing').addEventListener('click', async () => {
         handleStreamEvent(data, bubble, textSpan, null);
       },
     });
+    speak(streamedText);
+    finalizeResponse(div, textSpan, streamedText);
   } catch (e) {
     removeDots();
     textSpan.textContent = `Error: ${e.message}`;
   } finally {
-    busy = false;
-    sendBtn.disabled = false;
+    setBusy(false);
     setStatus('');
     refreshPresence().catch(() => {});
   }
 });
 
-// ── 9. Web Push setup ─────────────────────────────────────────
+document.getElementById('btn-conversations').addEventListener('click', async () => {
+  closeSidebarFn();
+  try {
+    const convos = await apiFetch('/api/conversations');
+    if (!convos.length) { showInfoPanel('Conversations', 'No conversations yet.'); return; }
+    const lines = convos.map(c => {
+      const time = new Date(c.last_at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+      const preview = (c.preview || '(no text)').replace(/\s+/g, ' ').trim().slice(0, 70);
+      return `${time}  ${preview}`;
+    });
+    showInfoPanel('Conversations', lines.join('\n'));
+  } catch (e) {
+    showInfoPanel('Conversations', `Error: ${e.message}`);
+  }
+});
+
+// ── 10. Web Push ──────────────────────────────────────────────
 function urlBase64ToUint8Array(b64) {
   const padding = '='.repeat((4 - (b64.length % 4)) % 4);
   const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -644,24 +821,19 @@ document.getElementById('btn-push').addEventListener('click', async () => {
   closeSidebarFn();
 
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    appendSystemMsg('Web Push is not supported in this browser. Use Safari on iOS 16.4+ and install as a home screen app.');
+    appendSystemMsg('Web Push not supported. Use Safari on iOS 16.4+ and install as a home screen app.');
     return;
   }
 
   try {
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      appendSystemMsg('Notification permission denied.');
-      return;
-    }
+    if (perm !== 'granted') { appendSystemMsg('Notification permission denied.'); return; }
 
     const reg = await navigator.serviceWorker.ready;
-    const keyResp = await fetch('/api/push/vapid-public-key', {
-      headers: { 'X-Session-Token': sessionToken },
-    });
+    const keyResp = await fetch('/api/push/vapid-public-key', { headers: { 'X-Session-Token': sessionToken } });
     const { public_key } = await keyResp.json();
     if (!public_key) {
-      appendSystemMsg('VAPID keys not configured on server. Run: python -m companion.web_push --generate-keys');
+      appendSystemMsg('VAPID keys not configured. Run: python -m companion.web_push --generate-keys');
       return;
     }
 
@@ -676,13 +848,13 @@ document.getElementById('btn-push').addEventListener('click', async () => {
       body: JSON.stringify(subscription.toJSON()),
     });
 
-    appendSystemMsg('Notifications enabled. You will receive alerts for reminders, events, and briefings.');
+    appendSystemMsg('Notifications enabled.');
   } catch (e) {
     appendSystemMsg(`Push setup failed: ${e.message}`);
   }
 });
 
-// ── 10. UI helpers ────────────────────────────────────────────
+// ── 11. UI helpers ────────────────────────────────────────────
 function setStatus(text, active) {
   statusText.textContent = text || '';
   statusDot.className = text ? (active ? 'busy' : 'active') : '';
@@ -690,12 +862,14 @@ function setStatus(text, active) {
 
 function adjustTextareaHeight() {
   messageInput.style.height = 'auto';
-  messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+  messageInput.style.height = Math.min(messageInput.scrollHeight, 140) + 'px';
 }
 
-messageInput.addEventListener('input', adjustTextareaHeight);
+messageInput.addEventListener('input', () => {
+  adjustTextareaHeight();
+  sendBtn.disabled = !messageInput.value.trim();
+});
 
-// Enter to send; Shift+Enter for newline
 messageInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -703,7 +877,16 @@ messageInput.addEventListener('keydown', (e) => {
   }
 });
 
-sendBtn.addEventListener('click', () => sendMessage(messageInput.value));
+sendBtn.addEventListener('click', () => {
+  if (busy) { if (_currentAbort) _currentAbort.abort(); return; }
+  sendMessage(messageInput.value);
+});
+
+// Preload voices on page load (required by some browsers)
+if (window.speechSynthesis) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.addEventListener('voiceschanged', () => {});
+}
 
 // ── Init ──────────────────────────────────────────────────────
 setInterval(() => {

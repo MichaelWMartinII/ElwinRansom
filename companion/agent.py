@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Callable, Generator
 
-from . import config, llm_client
+from . import config, llm_client, mcp_client
 from .tools import all_api_schemas, execute_tool
 
 logger = logging.getLogger(__name__)
@@ -23,14 +23,22 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ROUNDS = 10  # prevent runaway loops
 
 _AGENT_SYSTEM_SUFFIX = """
-You have access to tools that let you take real actions on the local machine:
-bash, read_file, write_file, edit_file, glob, grep.
+You have access to tools that let you take real actions:
 
-Use tools when the user asks you to DO something (run a command, edit a file,
-write a script, find something). Think step by step: plan, then call tools one
-at a time, inspect results, and produce a final answer.
+Local machine:
+- bash: run shell commands (safety-checked)
+- read_file, write_file, edit_file: work with files
+- glob: find files by pattern
+- grep: search file contents
 
-Never fabricate tool results. If a tool returns an error, say so and suggest a fix.
+Web:
+- web_search: Brave Search for current information
+- web_fetch: fetch and read a specific URL
+
+Any MCP-connected tools (prefixed with server name) are also available.
+
+Think step by step: plan, call tools one at a time, inspect results, then give a
+final answer. Never fabricate tool results — if a tool errors, report it honestly.
 """
 
 
@@ -50,6 +58,9 @@ def run_agent(
     Yields:
         str tokens of the final assistant response.
     """
+    # Load MCP tools on first agent run (idempotent)
+    mcp_client.load_mcp_tools()
+
     tools = all_api_schemas()
 
     # Inject agent instructions into the system prompt

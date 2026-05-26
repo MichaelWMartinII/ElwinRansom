@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elwin Ransom — Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0c0b08;
+      --bg2:      #131209;
+      --border:   #2c2a22;
+      --text:     #f2ede4;
+      --text-dim: #8a8270;
+      --accent:   #c9a84c;
+      --user-bg:  rgba(201, 168, 76, 0.08);
+      --user-border: rgba(201, 168, 76, 0.2);
+      --danger:   #c04040;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+
+    #shell {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .header-left h1 {
+      font-size: 0.85rem;
+      font-weight: normal;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+
+    .header-left p {
+      font-size: 0.75rem;
+      font-family: -apple-system, sans-serif;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    #remaining-badge {
+      font-size: 0.72rem;
+      font-family: -apple-system, sans-serif;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      white-space: nowrap;
+    }
+
+    /* Messages */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 20px 16px;
+    }
+
+    .message { margin-bottom: 20px; }
+
+    .message.user {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .message.user .bubble {
+      background: var(--user-bg);
+      border: 1px solid var(--user-border);
+      padding: 10px 15px;
+      max-width: 75%;
+      font-size: 0.95rem;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .message.bot .bot-label {
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 6px;
+      font-family: -apple-system, sans-serif;
+    }
+
+    .message.bot .bubble {
+      font-size: 0.97rem;
+      line-height: 1.75;
+      color: var(--text);
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
+    .message.system {
+      text-align: center;
+      font-size: 0.78rem;
+      font-family: -apple-system, sans-serif;
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
+    .typing-dots {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      padding: 8px 0;
+    }
+
+    .typing-dots span {
+      width: 6px; height: 6px;
+      background: var(--text-dim);
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40%           { transform: translateY(-5px); }
+    }
+
+    /* Input */
+    #input-area {
+      flex-shrink: 0;
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 12px 20px;
+      padding-bottom: calc(12px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border);
+    }
+
+    #message-input {
+      flex: 1;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: Georgia, serif;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      padding: 10px 14px;
+      resize: none;
+      outline: none;
+      max-height: 120px;
+      overflow-y: auto;
+      transition: border-color 0.2s;
+    }
+
+    #message-input:focus { border-color: var(--accent); }
+    #message-input::placeholder { color: var(--text-dim); }
+
+    #send-btn {
+      background: var(--accent);
+      border: none;
+      color: var(--bg);
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    #send-btn:disabled { opacity: 0.35; cursor: default; }
+    #send-btn.stop { background: var(--danger); }
+
+    /* Markdown */
+    .bubble.rendered { white-space: normal; }
+    .bubble.rendered p { margin: 0 0 0.75em; }
+    .bubble.rendered p:last-child { margin-bottom: 0; }
+    .bubble.rendered h1,.bubble.rendered h2,.bubble.rendered h3 { font-weight: normal; color: var(--accent); margin: 0.9em 0 0.4em; line-height: 1.3; }
+    .bubble.rendered h1 { font-size: 1.1rem; }
+    .bubble.rendered h2 { font-size: 1.0rem; }
+    .bubble.rendered h3 { font-size: 0.95rem; }
+    .bubble.rendered ul,.bubble.rendered ol { margin: 0.4em 0 0.75em 1.4em; }
+    .bubble.rendered li { margin: 0.2em 0; }
+    .bubble.rendered code { font-family: Menlo, monospace; font-size: 0.85em; background: var(--bg2); border: 1px solid var(--border); padding: 0.1em 0.4em; border-radius: 3px; }
+    .bubble.rendered pre { background: var(--bg2); border: 1px solid var(--border); padding: 12px 16px; overflow-x: auto; margin: 0.5em 0 0.75em; border-radius: 4px; }
+    .bubble.rendered pre code { background: none; border: none; padding: 0; font-size: 0.82rem; white-space: pre; }
+    .bubble.rendered blockquote { border-left: 2px solid var(--accent); margin: 0.5em 0; padding: 0.2em 0 0.2em 1em; color: var(--text-dim); font-style: italic; }
+    .bubble.rendered a { color: var(--accent); text-decoration: underline; }
+    .bubble.rendered strong { font-weight: bold; }
+    .bubble.rendered em { font-style: italic; }
+    .bubble.rendered hr { border: none; border-top: 1px solid var(--border); margin: 0.75em 0; }
+
+    /* Copy button */
+    .copy-btn { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; padding: 4px 10px; background: none; border: 1px solid var(--border); color: var(--text-dim); font-family: -apple-system, sans-serif; font-size: 0.72rem; letter-spacing: 0.04em; cursor: pointer; border-radius: 3px; transition: color 0.15s, border-color 0.15s; }
+    .copy-btn:hover { color: var(--text); border-color: var(--text-dim); }
+    .copy-btn.copied { color: #7ec87e; border-color: #7ec87e; }
+
+    /* Footer */
+    footer {
+      flex-shrink: 0;
+      text-align: center;
+      padding: 10px 20px;
+      font-size: 0.72rem;
+      font-family: -apple-system, sans-serif;
+      color: var(--text-dim);
+      border-top: 1px solid var(--border);
+    }
+
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    ::-webkit-scrollbar { width: 3px; }
+    ::-webkit-scrollbar-thumb { background: var(--border); }
+  </style>
+</head>
+<body>
+<div id="shell">
+  <header>
+    <div class="header-left">
+      <h1>Elwin Ransom</h1>
+      <p>Local AI companion — portfolio demo</p>
+    </div>
+    <span id="remaining-badge">Loading…</span>
+  </header>
+
+  <div id="messages">
+    <div class="message system">
+      Running on a 2020 MacBook Pro (Apple M1, 16GB unified memory) in Murfreesboro, TN. No data is stored or sent to any cloud service.
+    </div>
+  </div>
+
+  <div id="input-area">
+    <textarea id="message-input" rows="1" placeholder="Ask Elwin anything…"></textarea>
+    <button id="send-btn" disabled>
+      <svg id="send-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 8h12M9 3l5 5-5 5"/>
+      </svg>
+      <svg id="stop-icon" width="14" height="14" viewBox="0 0 14 14" fill="currentColor" style="display:none">
+        <rect x="2" y="2" width="10" height="10" rx="1.5"/>
+      </svg>
+    </button>
+  </div>
+
+  <footer>
+    Local LLM · No cloud · No storage &nbsp;·&nbsp;
+    <a href="https://michaelwmartinjr.com" target="_blank">michaelwmartinjr.com</a>
+  </footer>
+</div>
+
+<script>
+'use strict';
+
+const messagesEl  = document.getElementById('messages');
+const inputEl     = document.getElementById('message-input');
+const sendBtn     = document.getElementById('send-btn');
+const sendIcon    = document.getElementById('send-icon');
+const stopIcon    = document.getElementById('stop-icon');
+const remainingEl = document.getElementById('remaining-badge');
+
+let busy = false;
+let remaining = 10;
+const history = [];
+let _abort = null;
+
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/demo/status');
+    const d = await r.json();
+    remaining = d.remaining;
+    updateBadge();
+  } catch {}
+}
+
+function updateBadge() {
+  remainingEl.textContent = remaining <= 0
+    ? 'Limit reached'
+    : `${remaining} message${remaining === 1 ? '' : 's'} remaining today`;
+}
+
+function setBusy(val) {
+  busy = val;
+  if (val) {
+    sendBtn.disabled = false;
+    sendBtn.classList.add('stop');
+    sendIcon.style.display = 'none';
+    stopIcon.style.display = '';
+  } else {
+    sendBtn.classList.remove('stop');
+    sendIcon.style.display = '';
+    stopIcon.style.display = 'none';
+    sendBtn.disabled = !inputEl.value.trim() || remaining <= 0;
+  }
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function inline(text) {
+  let out = escHtml(text);
+  out = out.replace(/`([^`\n]+)`/g, (_, c) => `<code>${c}</code>`);
+  out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  out = out.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+)\)/g,
+    (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+  return out;
+}
+
+function renderMarkdown(raw) {
+  const codeBlocks = [];
+  let text = raw.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code>${escHtml(code.trimEnd())}</code></pre>`);
+    return `\x00CODE${idx}\x00`;
+  });
+  const lines = text.split('\n');
+  const out = [];
+  let listType = null;
+  function flushList() { if (listType) { out.push(`</${listType}>`); listType = null; } }
+  for (const line of lines) {
+    const cp = line.trim().match(/^\x00CODE(\d+)\x00$/);
+    if (cp) { flushList(); out.push(codeBlocks[+cp[1]]); continue; }
+    const h = line.match(/^(#{1,3}) (.+)/);
+    if (h) { flushList(); const lv = h[1].length; out.push(`<h${lv}>${inline(h[2])}</h${lv}>`); continue; }
+    if (/^---+$/.test(line.trim())) { flushList(); out.push('<hr>'); continue; }
+    const bq = line.match(/^> (.*)/);
+    if (bq) { flushList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
+    const ul = line.match(/^[-*+] (.+)/);
+    if (ul) { if (listType !== 'ul') { flushList(); out.push('<ul>'); listType = 'ul'; } out.push(`<li>${inline(ul[1])}</li>`); continue; }
+    const ol = line.match(/^\d+\. (.+)/);
+    if (ol) { if (listType !== 'ol') { flushList(); out.push('<ol>'); listType = 'ol'; } out.push(`<li>${inline(ol[1])}</li>`); continue; }
+    if (!line.trim()) { flushList(); continue; }
+    flushList();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  flushList();
+  return out.join('\n');
+}
+
+const COPY_SVG = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg>`;
+
+function finalizeResponse(msgDiv, span, rawText) {
+  const bubble = span.parentElement;
+  span.remove();
+  if (!rawText.trim()) {
+    bubble.querySelector('.typing-dots')?.remove();
+    bubble.innerHTML = '<span style="color:var(--text-dim);font-size:0.85em;font-style:italic;">stopped</span>';
+    return;
+  }
+  bubble.innerHTML = renderMarkdown(rawText);
+  bubble.classList.add('rendered');
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.innerHTML = `${COPY_SVG} Copy`;
+  let copyTimer = null;
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(rawText).then(() => {
+      clearTimeout(copyTimer);
+      copyBtn.classList.add('copied');
+      copyBtn.textContent = 'Copied';
+      copyTimer = setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = `${COPY_SVG} Copy`; }, 1800);
+    });
+  });
+  msgDiv.appendChild(copyBtn);
+}
+
+function appendUser(text) {
+  const div = document.createElement('div');
+  div.className = 'message user';
+  div.innerHTML = `<div class="bubble">${escHtml(text)}</div>`;
+  messagesEl.appendChild(div);
+  scrollDown();
+}
+
+function appendBotBubble() {
+  const div = document.createElement('div');
+  div.className = 'message bot';
+  div.innerHTML = `<div class="bot-label">Elwin</div><div class="bubble"></div>`;
+  const bubble = div.querySelector('.bubble');
+  const dots = document.createElement('div');
+  dots.className = 'typing-dots';
+  dots.innerHTML = '<span></span><span></span><span></span>';
+  bubble.appendChild(dots);
+  const span = document.createElement('span');
+  bubble.appendChild(span);
+  messagesEl.appendChild(div);
+  scrollDown();
+  let dotsGone = false;
+  return { div, span, removeDots() { if (!dotsGone) { dots.remove(); dotsGone = true; } } };
+}
+
+function appendSystem(text) {
+  const div = document.createElement('div');
+  div.className = 'message system';
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  scrollDown();
+}
+
+function scrollDown() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+async function send() {
+  const text = inputEl.value.trim();
+  if (!text || busy || remaining <= 0) return;
+
+  if (_abort) _abort.abort();
+  const ctrl = new AbortController();
+  _abort = ctrl;
+
+  setBusy(true);
+  inputEl.value = '';
+  adjustHeight();
+
+  appendUser(text);
+  const { div, span, removeDots } = appendBotBubble();
+  let streamed = '';
+
+  try {
+    const resp = await fetch('/api/demo/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, history }),
+      signal: ctrl.signal,
+    });
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const ev = JSON.parse(line.slice(6));
+          if (ev.type === 'token') {
+            removeDots();
+            streamed += ev.content;
+            span.textContent = streamed;
+            scrollDown();
+          } else if (ev.type === 'remaining') {
+            remaining = ev.content;
+            updateBadge();
+          } else if (ev.type === 'error') {
+            removeDots();
+            span.textContent = ev.content;
+          }
+        } catch {}
+      }
+    }
+
+    if (streamed) {
+      history.push({ role: 'user', content: text });
+      history.push({ role: 'assistant', content: streamed });
+    }
+    finalizeResponse(div, span, streamed);
+
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      finalizeResponse(div, span, streamed);
+    } else {
+      removeDots();
+      span.textContent = `Error: ${e.message}`;
+    }
+  } finally {
+    _abort = null;
+    setBusy(false);
+    if (remaining <= 0) {
+      appendSystem("You've used all 10 demo messages for today. Come back tomorrow!");
+      inputEl.disabled = true;
+    }
+  }
+}
+
+function adjustHeight() {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+}
+
+inputEl.addEventListener('input', () => {
+  adjustHeight();
+  sendBtn.disabled = !inputEl.value.trim() || remaining <= 0;
+});
+
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+sendBtn.addEventListener('click', () => {
+  if (busy) { if (_abort) _abort.abort(); return; }
+  send();
+});
+
+loadStatus().then(() => {
+  sendBtn.disabled = remaining <= 0 || !inputEl.value.trim();
+});
+</script>
+</body>
+</html>

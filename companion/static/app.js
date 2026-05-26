@@ -352,14 +352,17 @@ function finalizeResponse(msgDiv, textSpan, rawText) {
   bubble.innerHTML = renderMarkdown(rawText);
   bubble.classList.add('rendered');
 
+  const COPY_SVG = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg>`;
   const copyBtn = document.createElement('button');
   copyBtn.className = 'copy-btn';
-  copyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg> Copy`;
+  copyBtn.innerHTML = `${COPY_SVG} Copy`;
+  let copyTimer = null;
   copyBtn.addEventListener('click', () => {
     navigator.clipboard.writeText(rawText).then(() => {
+      clearTimeout(copyTimer);
       copyBtn.classList.add('copied');
       copyBtn.textContent = 'Copied';
-      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M2 10V2h8"/></svg> Copy`; }, 1800);
+      copyTimer = setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = `${COPY_SVG} Copy`; }, 1800);
     });
   });
   msgDiv.appendChild(copyBtn);

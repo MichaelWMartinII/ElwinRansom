@@ -18,11 +18,12 @@ import time
 from collections import defaultdict
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from aiohttp import web
 
 from . import agent as agent_mod
-from . import brave_search, camera, config, db, dory_bridge, embeddings, llm_client, pipeline, vision
+from . import brave_search, camera, config, db, dory_bridge, embeddings, llm_client, mcp_client, pipeline, vision
 from .controller import InputType, process_input
 
 logging.basicConfig(
@@ -37,6 +38,12 @@ _llm_lock = asyncio.Lock()
 _session_counter = 0
 _SESSION_TOKENS: dict[str, float] = {}  # token -> expiry timestamp
 _SESSION_TTL = 24 * 3600  # 24 hours
+_TOKENS_FILE = Path(__file__).parent.parent / "memories" / ".session_tokens.json"
+
+# Agent-mode rate limiting: max 30 calls per IP per hour
+AGENT_RATE_LIMIT = 30
+AGENT_RATE_WINDOW = 3600
+_agent_timestamps: dict[str, list[float]] = defaultdict(list)
 
 # ── Demo rate limiting ────────────────────────────────────────
 DEMO_LIMIT = 10  # messages per IP per day
@@ -75,6 +82,42 @@ def _demo_consume(ip: str) -> bool:
 _STATIC = Path(__file__).parent / "static"
 
 
+# ── Session token persistence ────────────────────────────────
+
+def _load_tokens() -> None:
+    global _SESSION_TOKENS
+    if not _TOKENS_FILE.exists():
+        return
+    try:
+        data: dict[str, Any] = json.loads(_TOKENS_FILE.read_text())
+        now = time.time()
+        _SESSION_TOKENS = {k: v for k, v in data.items() if isinstance(v, (int, float)) and v > now}
+    except Exception as e:
+        logger.warning("Could not load session tokens: %s", e)
+
+
+def _save_tokens() -> None:
+    try:
+        _TOKENS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _TOKENS_FILE.write_text(json.dumps(_SESSION_TOKENS))
+    except Exception as e:
+        logger.warning("Could not save session tokens: %s", e)
+
+
+# ── Agent rate limiting ───────────────────────────────────────
+
+def _agent_rate_check(ip: str) -> bool:
+    """Returns True if the request is allowed, False if limit exceeded."""
+    now = time.time()
+    cutoff = now - AGENT_RATE_WINDOW
+    times = _agent_timestamps[ip]
+    _agent_timestamps[ip] = [t for t in times if t > cutoff]
+    if len(_agent_timestamps[ip]) >= AGENT_RATE_LIMIT:
+        return False
+    _agent_timestamps[ip].append(now)
+    return True
+
+
 # ── Helpers ──────────────────────────────────────────────────
 
 def _current_session() -> str:
@@ -99,7 +142,7 @@ async def _sse_send(resp: web.StreamResponse, data: dict) -> None:
 
 # ── Auth middleware ───────────────────────────────────────────
 
-_PUBLIC_PATHS = {"/", "/api/auth", "/demo"}
+_PUBLIC_PATHS = {"/", "/api/auth", "/api/health", "/demo"}
 
 
 @web.middleware
@@ -134,11 +177,17 @@ async def api_auth(request: web.Request) -> web.Response:
 
     token = secrets.token_hex(32)
     _SESSION_TOKENS[token] = time.time() + _SESSION_TTL
+    _save_tokens()
 
     resp = web.json_response({"ok": True, "token": token})
     secure = bool(config.TLS_CERT_PATH)
     resp.set_cookie("session", token, httponly=True, secure=secure, samesite="Strict")
     return resp
+
+
+async def api_health(request: web.Request) -> web.Response:
+    llm_ok = llm_client.health_check()
+    return web.json_response({"ok": llm_ok, "llm": llm_ok}, status=200 if llm_ok else 503)
 
 
 async def api_me(request: web.Request) -> web.Response:
@@ -340,9 +389,20 @@ async def _run_agent_streaming(
             loop,
         )
 
+    def _on_llm_call() -> None:
+        asyncio.run_coroutine_threadsafe(
+            _sse_send(sse_resp, {"type": "status", "content": "Thinking…"}),
+            loop,
+        )
+
     def _produce():
         try:
-            for tok in agent_mod.run_agent(messages, on_tool_call=_on_tool_call, on_tool_result=_on_tool_result):
+            for tok in agent_mod.run_agent(
+                messages,
+                on_tool_call=_on_tool_call,
+                on_tool_result=_on_tool_result,
+                on_llm_call=_on_llm_call,
+            ):
                 asyncio.run_coroutine_threadsafe(token_queue.put(tok), loop)
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(token_queue.put(("error", str(exc))), loop)
@@ -383,6 +443,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if not user_text:
         raise web.HTTPBadRequest(reason="text field required")
     use_agent = bool(data.get("agent_mode", False))
+
+    if use_agent and not _agent_rate_check(_get_client_ip(request)):
+        sse_resp = await _sse_start(request)
+        await _sse_send(sse_resp, {
+            "type": "error",
+            "content": f"Agent rate limit reached ({AGENT_RATE_LIMIT} requests/hour). Try again later.",
+        })
+        await _sse_send(sse_resp, {"type": "done"})
+        return sse_resp
 
     sse_resp = await _sse_start(request)
 
@@ -766,6 +835,14 @@ async def api_demo_chat(request: web.Request) -> web.StreamResponse:
     return sse_resp
 
 
+# ── MCP management ───────────────────────────────────────────
+
+async def api_mcp_reload(request: web.Request) -> web.Response:
+    mcp_client.reset_loaded()
+    count = await asyncio.to_thread(mcp_client.load_mcp_tools)
+    return web.json_response({"ok": True, "tools_loaded": count})
+
+
 # ── Static / index ────────────────────────────────────────────
 
 async def index(request: web.Request) -> web.FileResponse:
@@ -784,6 +861,7 @@ def _make_app() -> web.Application:
     app.router.add_get( "/api/demo/status",        api_demo_status)
     app.router.add_post("/api/demo/chat",          api_demo_chat)
 
+    app.router.add_get( "/api/health",              api_health)
     app.router.add_post("/api/auth",               api_auth)
     app.router.add_get( "/api/me",                 api_me)
     app.router.add_post("/api/chat",               api_chat)
@@ -801,6 +879,7 @@ def _make_app() -> web.Application:
     app.router.add_get( "/api/briefing",           api_briefing)
     app.router.add_post("/api/push/subscribe",     api_push_subscribe)
     app.router.add_get( "/api/push/vapid-public-key", api_push_vapid_key)
+    app.router.add_post("/api/mcp/reload",         api_mcp_reload)
 
     return app
 
@@ -809,6 +888,8 @@ def _make_app() -> web.Application:
 
 def main() -> None:
     global _conn
+
+    _load_tokens()
 
     if not config.WEB_PASSWORD:
         print("WARNING: WEB_PASSWORD is not set in agent.conf — server will reject all logins")

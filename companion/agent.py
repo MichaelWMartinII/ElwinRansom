@@ -46,6 +46,7 @@ def run_agent(
     messages: list[dict],
     on_tool_call: Callable[[str, dict], None] | None = None,
     on_tool_result: Callable[[str, str], None] | None = None,
+    on_llm_call: Callable[[], None] | None = None,
 ) -> Generator[str, None, None]:
     """
     Run the agent loop. Yields text tokens as the final response is produced.
@@ -67,6 +68,8 @@ def run_agent(
     msgs = _inject_agent_suffix(messages)
 
     for round_num in range(MAX_TOOL_ROUNDS):
+        if on_llm_call:
+            on_llm_call()
         try:
             resp = llm_client.chat_with_tools(msgs, tools)
         except Exception as e:
@@ -132,22 +135,6 @@ def run_agent(
         yield from content
     except Exception as e:
         yield f"\n[Agent: max tool rounds reached, error getting summary: {e}]"
-
-
-def is_agentic_request(user_text: str) -> bool:
-    """
-    Heuristic: does this message sound like it wants Elwin to DO something
-    on the machine rather than just answer a question?
-    """
-    text = user_text.lower()
-    action_verbs = [
-        "run ", "execute ", "write a script", "create a file", "edit ",
-        "modify ", "delete ", "install ", "find all ", "search for ",
-        "grep ", "list all ", "show me the files", "what files",
-        "read the file", "open the file", "check the output",
-        "make a ", "build ", "compile ", "git ", "clone ",
-    ]
-    return any(text.startswith(v) or f" {v}" in text for v in action_verbs)
 
 
 def _inject_agent_suffix(messages: list[dict]) -> list[dict]:

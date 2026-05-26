@@ -113,6 +113,12 @@ def _make_executor(server_name: str, cfg: dict, tool_name: str):
     return _execute
 
 
+def reset_loaded() -> None:
+    """Force a reload of MCP tools on the next agent run."""
+    global _loaded
+    _loaded = False
+
+
 def load_mcp_tools() -> int:
     """
     Connect to all configured MCP servers, register their tools.

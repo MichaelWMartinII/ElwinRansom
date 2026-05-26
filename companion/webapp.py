@@ -21,6 +21,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from . import agent as agent_mod
 from . import brave_search, camera, config, db, dory_bridge, embeddings, llm_client, pipeline, vision
 from .controller import InputType, process_input
 
@@ -308,6 +309,68 @@ def _capture_and_describe(user_text: str) -> tuple[str, str | None]:
     return path, caption
 
 
+# ── Agent streaming helper ────────────────────────────────────
+
+async def _run_agent_streaming(
+    sse_resp: web.StreamResponse,
+    user_text: str,
+) -> None:
+    """Run agent mode and stream tokens + tool events via SSE."""
+    session = _current_session()
+
+    _, messages = await asyncio.to_thread(
+        pipeline.prepare_context, _conn, session, user_text
+    )
+
+    loop = asyncio.get_running_loop()
+    token_queue: asyncio.Queue = asyncio.Queue()
+    agent_tokens: list[str] = []
+
+    def _on_tool_call(name: str, params: dict) -> None:
+        import json as _json
+        asyncio.run_coroutine_threadsafe(
+            _sse_send(sse_resp, {"type": "tool_call", "name": name, "params": params}),
+            loop,
+        )
+
+    def _on_tool_result(name: str, result: str) -> None:
+        preview = result[:300] + ("…" if len(result) > 300 else "")
+        asyncio.run_coroutine_threadsafe(
+            _sse_send(sse_resp, {"type": "tool_result", "name": name, "content": preview}),
+            loop,
+        )
+
+    def _produce():
+        try:
+            for tok in agent_mod.run_agent(messages, on_tool_call=_on_tool_call, on_tool_result=_on_tool_result):
+                asyncio.run_coroutine_threadsafe(token_queue.put(tok), loop)
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(token_queue.put(("error", str(exc))), loop)
+        asyncio.run_coroutine_threadsafe(token_queue.put(None), loop)
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    while True:
+        try:
+            item = await asyncio.wait_for(token_queue.get(), timeout=120.0)
+        except asyncio.TimeoutError:
+            await _sse_send(sse_resp, {"type": "error", "content": "Agent timed out."})
+            await _sse_send(sse_resp, {"type": "done"})
+            return
+        if item is None:
+            break
+        if isinstance(item, tuple):
+            await _sse_send(sse_resp, {"type": "error", "content": item[1]})
+            await _sse_send(sse_resp, {"type": "done"})
+            return
+        agent_tokens.append(item)
+        await _sse_send(sse_resp, {"type": "token", "content": item})
+
+    response = "".join(agent_tokens) or "(no response)"
+    await asyncio.to_thread(pipeline.save_response, _conn, session, user_text, response)
+    await _sse_send(sse_resp, {"type": "done"})
+
+
 # ── Chat endpoint ─────────────────────────────────────────────
 
 async def api_chat(request: web.Request) -> web.StreamResponse:
@@ -323,7 +386,10 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     sse_resp = await _sse_start(request)
 
     async with _llm_lock:
-        await _run_pipeline_streaming(sse_resp, user_text)
+        if agent_mod.is_agentic_request(user_text):
+            await _run_agent_streaming(sse_resp, user_text)
+        else:
+            await _run_pipeline_streaming(sse_resp, user_text)
 
     return sse_resp
 

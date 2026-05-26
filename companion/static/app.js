@@ -404,6 +404,23 @@ async function sendMessage(text) {
   }
 }
 
+function appendToolChip(name, content, bubble) {
+  const chip = document.createElement('div');
+  chip.className = 'tool-chip';
+  const label = document.createElement('span');
+  label.className = 'tool-chip-name';
+  label.textContent = name;
+  chip.appendChild(label);
+  if (content) {
+    const body = document.createElement('span');
+    body.className = 'tool-chip-content';
+    body.textContent = content;
+    chip.appendChild(body);
+  }
+  if (bubble) bubble.appendChild(chip);
+  scrollToBottom();
+}
+
 function handleStreamEvent(data, bubble, textSpan, onClear) {
   switch (data.type) {
     case 'clear':
@@ -414,6 +431,17 @@ function handleStreamEvent(data, bubble, textSpan, onClear) {
       break;
     case 'transcription':
       appendMessage('user', data.content);
+      break;
+    case 'tool_call': {
+      const summary = data.params?.command
+        ? `$ ${data.params.command}`.slice(0, 80)
+        : data.params?.path || Object.values(data.params || {}).join(' ').slice(0, 60) || '';
+      appendToolChip(`⚙ ${data.name}`, summary, bubble);
+      setStatus(`Running ${data.name}…`, true);
+      break;
+    }
+    case 'tool_result':
+      setStatus('', false);
       break;
     case 'reminder_set':
     case 'event_set':

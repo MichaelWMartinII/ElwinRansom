@@ -87,6 +87,43 @@ def stream_chat(
                         continue
 
 
+def chat_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    temperature: float = 0.7,
+    max_tokens: int | None = None,
+) -> dict:
+    """Non-streaming completion with tool definitions.
+
+    Returns the full /v1/chat/completions response dict.
+    The caller inspects choices[0].finish_reason and choices[0].message.tool_calls.
+    """
+    body: dict = {
+        "model": config.OLLAMA_MODEL,
+        "messages": messages,
+        "stream": False,
+        "temperature": temperature,
+        "options": {
+            "num_ctx": config.CTX_SIZE,
+            "think": False,
+        },
+    }
+    if tools:
+        body["tools"] = tools
+    if max_tokens:
+        body["max_tokens"] = max_tokens
+
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{config.LLM_BASE_URL}/v1/chat/completions",
+        data=data,
+        headers=_headers(),
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        return json.loads(resp.read())
+
+
 def complete_json(
     messages: list[dict[str, str]],
     temperature: float = 0.3,

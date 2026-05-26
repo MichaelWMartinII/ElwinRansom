@@ -382,11 +382,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     user_text = (data.get("text") or "").strip()
     if not user_text:
         raise web.HTTPBadRequest(reason="text field required")
+    use_agent = bool(data.get("agent_mode", False))
 
     sse_resp = await _sse_start(request)
 
     async with _llm_lock:
-        if agent_mod.is_agentic_request(user_text):
+        if use_agent:
             await _run_agent_streaming(sse_resp, user_text)
         else:
             await _run_pipeline_streaming(sse_resp, user_text)

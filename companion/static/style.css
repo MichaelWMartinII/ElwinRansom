@@ -592,6 +592,13 @@ header h1 {
 
 .icon-btn:hover { color: var(--text); background: var(--bg3); }
 
+#agent-btn.active {
+  color: var(--accent);
+  background: rgba(201, 168, 76, 0.12);
+  border-radius: 4px;
+}
+#agent-btn.active:hover { background: rgba(201, 168, 76, 0.2); }
+
 #mic-btn.recording {
   color: var(--danger);
   background: rgba(192, 64, 64, 0.12);

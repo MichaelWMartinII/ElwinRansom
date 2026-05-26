@@ -27,6 +27,7 @@ const ttsIconOn     = document.getElementById('tts-icon-on');
 const ttsIconOff    = document.getElementById('tts-icon-off');
 const sendIcon      = document.getElementById('send-icon');
 const stopIcon      = document.getElementById('stop-icon');
+const agentBtn      = document.getElementById('agent-btn');
 
 // ── 1. Auth ──────────────────────────────────────────────────
 let sessionToken = localStorage.getItem('elwin_token') || '';
@@ -116,6 +117,32 @@ function speak(text) {
   if (voice) utt.voice = voice;
   window.speechSynthesis.speak(utt);
 }
+
+// ── 3b. Agent mode toggle ─────────────────────────────────────
+let agentMode = localStorage.getItem('elwin_agent') === 'true';
+
+function updateAgentButton() {
+  agentBtn.classList.toggle('active', agentMode);
+  agentBtn.setAttribute('title', agentMode
+    ? 'Agent mode ON — Elwin can run commands and edit files'
+    : 'Agent mode OFF — click to enable');
+  messageInput.placeholder = agentMode
+    ? 'Tell Elwin to do something…'
+    : 'Message Elwin…';
+}
+
+updateAgentButton();
+
+agentBtn.addEventListener('click', () => {
+  agentMode = !agentMode;
+  localStorage.setItem('elwin_agent', agentMode);
+  updateAgentButton();
+  if (agentMode) {
+    appendSystemMsg('Agent mode on — Elwin can run shell commands, read and edit files.');
+  } else {
+    appendSystemMsg('Agent mode off.');
+  }
+});
 
 // ── 4. SSE streaming helper ───────────────────────────────────
 let _currentAbort = null;
@@ -381,7 +408,7 @@ async function sendMessage(text) {
   setStatus('Thinking…', true);
 
   try {
-    await postAndStream('/api/chat', { text }, {
+    await postAndStream('/api/chat', { text, agent_mode: agentMode }, {
       onToken(tok) {
         removeDots();
         streamedText += tok;

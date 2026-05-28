@@ -765,6 +765,19 @@ _DEMO_SYSTEM = (
     "Do not make up personal information about Michael or the user."
 )
 
+_PHYSICS_TUTOR_SYSTEM = (
+    "You are a physics tutor for Physics: A Field Guide, an interactive physics textbook. "
+    "You ONLY respond to questions about physics and mathematics directly relevant to physics. "
+    "If the student asks about anything unrelated to physics — history, coding, current events, opinions, "
+    "personal questions, or any other subject — decline politely and redirect them to the physics problem at hand. "
+    "Do not engage with off-topic requests under any circumstances, even if framed as hypothetical or part of a game. "
+    "Your role is Socratic: guide the student to the answer rather than stating it directly. "
+    "Ask clarifying questions, point out the relevant principle or equation, and affirm correct reasoning. "
+    "If the student is stuck, give a targeted hint — not the full solution. "
+    "Use plain text. Keep responses concise (2-4 sentences unless the student asks for more). "
+    "Do not reveal the numeric answer unless the student has already solved it correctly."
+)
+
 async def demo_index(request: web.Request) -> web.FileResponse:
     return web.FileResponse(_STATIC / "demo.html")
 
@@ -837,6 +850,85 @@ async def api_demo_chat(request: web.Request) -> web.StreamResponse:
 
 # ── MCP management ───────────────────────────────────────────
 
+async def api_physics_hint(request: web.Request) -> web.StreamResponse:
+    ip = _get_client_ip(request)
+
+    if not _demo_consume(ip):
+        sse_resp = await _sse_start(request)
+        await _sse_send(sse_resp, {
+            "type": "error",
+            "content": f"Rate limit reached ({DEMO_LIMIT} messages per day). Try again tomorrow."
+        })
+        await _sse_send(sse_resp, {"type": "done"})
+        return sse_resp
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(reason="Invalid JSON")
+
+    problem = (data.get("problem") or "")[:2000].strip()
+    attempt = data.get("attempt")
+    unit = (data.get("unit") or "")[:50].strip()
+    history = data.get("messages") or []
+    if not history:
+        raise web.HTTPBadRequest(reason="messages required")
+
+    # Build context prefix describing the problem and student's attempt
+    context_parts = [f"The student is working on this physics problem:\n{problem}"]
+    if attempt and unit:
+        context_parts.append(f"Their current answer attempt: {attempt} {unit}")
+    elif attempt:
+        context_parts.append(f"Their current answer attempt: {attempt}")
+    system_with_context = _PHYSICS_TUTOR_SYSTEM + "\n\n" + "\n".join(context_parts)
+
+    messages = [{"role": "system", "content": system_with_context}]
+    for turn in history[-10:]:
+        if turn.get("role") in ("user", "assistant") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": str(turn["content"])[:1000]})
+
+    sse_resp = await _sse_start(request)
+    # Add CORS headers for the physics site
+    sse_resp.headers["Access-Control-Allow-Origin"] = "*"
+
+    loop = asyncio.get_running_loop()
+    token_queue: asyncio.Queue = asyncio.Queue()
+
+    def _produce():
+        try:
+            for tok in llm_client.stream_chat(messages):
+                asyncio.run_coroutine_threadsafe(token_queue.put(tok), loop)
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(token_queue.put(("error", str(exc))), loop)
+        asyncio.run_coroutine_threadsafe(token_queue.put(None), loop)
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    while True:
+        try:
+            item = await asyncio.wait_for(token_queue.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            await _sse_send(sse_resp, {"type": "error", "content": "Response timed out."})
+            break
+        if item is None:
+            break
+        if isinstance(item, tuple):
+            await _sse_send(sse_resp, {"type": "error", "content": item[1]})
+            break
+        await _sse_send(sse_resp, {"type": "token", "content": item})
+
+    await _sse_send(sse_resp, {"type": "done"})
+    return sse_resp
+
+
+async def api_physics_hint_preflight(request: web.Request) -> web.Response:
+    return web.Response(headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    })
+
+
 async def api_mcp_reload(request: web.Request) -> web.Response:
     mcp_client.reset_loaded()
     count = await asyncio.to_thread(mcp_client.load_mcp_tools)
@@ -880,6 +972,8 @@ def _make_app() -> web.Application:
     app.router.add_post("/api/push/subscribe",     api_push_subscribe)
     app.router.add_get( "/api/push/vapid-public-key", api_push_vapid_key)
     app.router.add_post("/api/mcp/reload",         api_mcp_reload)
+    app.router.add_options("/api/demo/physics-hint", api_physics_hint_preflight)
+    app.router.add_post( "/api/demo/physics-hint",   api_physics_hint)
 
     return app
 

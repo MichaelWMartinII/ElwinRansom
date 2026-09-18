@@ -1,5 +1,6 @@
 """SQLite schema, connection, and CRUD operations."""
 
+import re
 import sqlite3
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -240,16 +241,20 @@ def upsert_person(
 ) -> str | None:
     """Record someone Elwin knows. Returns None for a rejected name."""
     name = (name or "").strip()
-    if not name or is_self_reference(name):
+    if not name or is_self_reference(name) or is_relationship_word(name):
         return None
     # Match case-insensitively so "user" and "User" don't become two people.
     row = conn.execute(
         "SELECT id FROM people WHERE lower(name) = lower(?)", (name,)
     ).fetchone()
     if row:
+        # Only fill an empty relationship. Extraction re-guesses on every turn,
+        # and letting it overwrite is how one person ended up as "wife",
+        # "spouse" and "family member" at once.
         if relationship:
             conn.execute(
-                "UPDATE people SET relationship = ? WHERE id = ?",
+                "UPDATE people SET relationship = ? "
+                "WHERE id = ? AND (relationship IS NULL OR relationship = '')",
                 (relationship, row["id"]),
             )
             conn.commit()
@@ -287,9 +292,28 @@ _SELF_NAMES = {
 }
 
 
+# A relationship is already a field on the row, so storing one as a name just
+# creates a second record for someone already known — "wife" and "Mrs. Martin"
+# were the same person for seven months.
+_RELATION_WORDS = {
+    "wife", "husband", "spouse", "partner", "girlfriend", "boyfriend",
+    "mom", "mother", "dad", "father", "son", "daughter", "child", "kid",
+    "brother", "sister", "sibling", "friend", "boss", "coworker", "colleague",
+    "neighbor", "neighbour", "dog", "cat", "pet", "user", "owner", "family",
+}
+
+
 def is_self_reference(name: str) -> bool:
     """True if *name* refers to the assistant rather than someone it knows."""
     return (name or "").strip().lower() in _SELF_NAMES
+
+
+def is_relationship_word(name: str) -> bool:
+    """True if *name* is a relationship rather than someone's name."""
+    # A prefix strip, not str.lstrip, which removes characters and would turn
+    # "Mary" into "ary".
+    n = re.sub(r"^(my|the|a|our|his|her|their)\s+", "", (name or "").strip().lower())
+    return n in _RELATION_WORDS
 
 
 def save_fact(

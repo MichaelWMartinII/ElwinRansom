@@ -49,6 +49,18 @@ RECENT_TOKEN_BUDGET = PROMPT_BUDGET - SYSTEM_TOKEN_BUDGET - MEMORY_TOKEN_BUDGET
 DATA_DIR = _ROOT / "memories"
 DB_PATH = DATA_DIR / "companion.db"
 DORY_DB_PATH = Path(_conf.get("DORY_DB_PATH", str(DATA_DIR / "dory_elwin.db"))).expanduser()
+if not DORY_DB_PATH.is_absolute():
+    # Resolve against the repo, not the launcher's cwd.
+    DORY_DB_PATH = _ROOT / DORY_DB_PATH
+
+# Speech-to-text (Qwen3-ASR via mlx-audio). Hotwords bias recognition toward
+# names the model would otherwise mishear ("Alwyn", "Dori", "Marysville").
+STT_MODEL = _conf.get("STT_MODEL", "mlx-community/Qwen3-ASR-1.7B-4bit")
+STT_HOTWORDS = [
+    w.strip()
+    for w in _conf.get("STT_HOTWORDS", "Elwin,Lila,Dory").split(",")
+    if w.strip()
+]
 
 # Embedding
 EMBED_MODEL = "all-MiniLM-L6-v2"
@@ -68,10 +80,41 @@ VISION_PORT = int(_conf.get("VISION_PORT", "55507"))
 VISION_API_KEY = _conf.get("VISION_API_KEY", "")
 VISION_BASE_URL = f"http://{VISION_HOST}:{VISION_PORT}"
 
-# Butler / briefing
-BRIEFING_HOUR = int(_conf.get("BRIEFING_HOUR", "8"))
-BRIEFING_MINUTE = int(_conf.get("BRIEFING_MINUTE", "0"))
-LOCATION = _conf.get("LOCATION", "Murfreesboro, TN")
+# Butler / wake-up alarm. ALARM_TIME is only the initial default; the live
+# setting is stored in the database and changed from chat.
+ALARM_TIME = _conf.get("ALARM_TIME", "06:30")
+
+# Read-only calendar sync from iCal links (space-separated per provider).
+# Apple hands out webcal:// links, which are plain HTTPS underneath.
+CALENDAR_ICS_URLS = [
+    re.sub(r"^webcal://", "https://", url)
+    for key in ("GOOGLE_CALENDAR_URLS", "APPLE_CALENDAR_URLS")
+    for url in _conf.get(key, "").split()
+]
+
+# Weather: "Name=lat,lon; Name=lat,lon"
+def _parse_places(raw: str) -> list[tuple[str, float, float]]:
+    places = []
+    for item in raw.split(";"):
+        name, _, coords = item.partition("=")
+        try:
+            lat, lon = (float(x) for x in coords.split(","))
+        except ValueError:
+            continue
+        places.append((name.strip(), lat, lon))
+    return places
+
+
+WEATHER_LOCATIONS = _parse_places(_conf.get(
+    "WEATHER_LOCATIONS",
+    "Alexandria, VA=38.8048,-77.0469; Washington, DC=38.9072,-77.0369",
+))
+
+# Browser origins allowed to call the public demo API (space-separated)
+DEMO_ORIGINS = set(_conf.get(
+    "DEMO_ORIGINS",
+    "https://michaelwmartinjr.com https://physicsfieldguide.michaelwmartinjr.com",
+).split())
 
 # Web UI
 WEB_HOST          = _conf.get("WEB_HOST", "0.0.0.0")

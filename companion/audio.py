@@ -1,28 +1,35 @@
-"""Speech-to-text via faster-whisper (CTranslate2).
+"""Speech-to-text via Qwen3-ASR on MLX (mlx-audio).
 
-Converts any audio file to 16 kHz mono WAV via ffmpeg, then transcribes
-with the faster-whisper `base.en` model. No external server needed.
+Converts any audio file to 16 kHz mono PCM via ffmpeg, then transcribes with
+the model named by STT_MODEL (default Qwen3-ASR-1.7B, 4-bit). Runs on the
+Apple GPU; no external server needed.
 """
 
 import logging
 import subprocess
+import threading
 
 import numpy as np
 
+from . import config
+
 logger = logging.getLogger(__name__)
 
-# Lazy singleton — loaded once on first transcription, stays in memory (~150 MB).
+# Lazy singleton — loaded once on first transcription, stays in memory (~1.6 GB,
+# ~2.4 GB peak while decoding). MLX generation isn't thread-safe, so calls are
+# serialized.
 _model = None
+_lock = threading.Lock()
 
 
 def _get_model():
     global _model
     if _model is None:
-        from faster_whisper import WhisperModel
+        from mlx_audio.stt import load
 
-        logger.info("Loading faster-whisper model (base.en) ...")
-        _model = WhisperModel("base.en", device="cpu", compute_type="int8")
-        logger.info("faster-whisper model loaded.")
+        logger.info("Loading STT model (%s) ...", config.STT_MODEL)
+        _model = load(config.STT_MODEL)
+        logger.info("STT model loaded.")
     return _model
 
 
@@ -46,13 +53,19 @@ def transcribe(audio_path: str) -> str:
     result = subprocess.run(cmd, capture_output=True, check=True)
     pcm_bytes = result.stdout
 
-    # Convert raw PCM to float32 numpy array (what faster-whisper expects)
+    # Convert raw PCM to float32 in [-1, 1]
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    if audio.size == 0:
+        return ""
 
-    # Transcribe
-    model = _get_model()
-    segments, _info = model.transcribe(audio, language="en")
-    text = " ".join(seg.text.strip() for seg in segments).strip()
+    with _lock:
+        model = _get_model()
+        output = model.generate(
+            audio,
+            language="English",
+            hotwords=config.STT_HOTWORDS or None,
+        )
+    text = (output.text or "").strip()
 
     logger.info("Transcription: %s", text[:120])
     return text

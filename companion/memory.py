@@ -7,7 +7,7 @@ Builds the full message list for each LLM call:
   4. Current user message
 """
 
-from . import config, db, dory_bridge, embeddings
+from . import alarm, calendar_sync, config, db, dory_bridge, embeddings
 from .prompts import build_system_prompt
 
 
@@ -38,11 +38,12 @@ def assemble_context(
     # 1. System prompt
     people = db.get_all_people(conn)
     facts = db.get_active_facts(conn)
-    events = db.get_todays_events(conn)
+    events = calendar_sync.all_todays_events(conn)
     todos = db.get_pending_todos(conn)
     system_text = build_system_prompt(
         people, facts, events=events, todos=todos,
-        search_enabled=bool(config.BRAVE_SEARCH_API_KEY)
+        search_enabled=bool(config.BRAVE_SEARCH_API_KEY),
+        alarm=alarm.prompt_state(alarm.get_settings(conn)),
     )
     system_tokens = _estimate_tokens(system_text)
 

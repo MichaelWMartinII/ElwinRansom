@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,6 +72,30 @@ def send_telegram(text: str) -> None:
             headers={"Content-Type": "application/json"},
         )
         urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass
+
+
+def send_telegram_voice(ogg_path: str) -> None:
+    """Send an OGG Opus file to the owner as a Telegram voice note."""
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_OWNER_ID:
+        return
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendVoice"
+    boundary = uuid.uuid4().hex
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="chat_id"\r\n\r\n'
+        f"{config.TELEGRAM_OWNER_ID}\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="voice"; filename="voice.ogg"\r\n'
+        f"Content-Type: audio/ogg\r\n\r\n"
+    ).encode() + Path(ogg_path).read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+    try:
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        urllib.request.urlopen(req, timeout=30)
     except Exception:
         pass
 

@@ -108,12 +108,34 @@ You can schedule events, manage to-dos, and capture notes. Use these markers exa
 One marker per type per response. Markers are stripped before display."""
 
 
+_ALARM_INSTRUCTIONS = """\
+
+You manage Michael's daily wake-up alarm (a Telegram message plus a spoken \
+voice note with his morning briefing). Its exact current state:
+{current}
+
+When he asks to change it, emit one marker:
+[ALARM: 06:30]                         (change the time; 24-hour)
+[ALARM: 07:15 | weekdays]              (time and days: daily, weekdays, weekends, or e.g. mon,wed,fri)
+[ALARM: 06:45 | daily | Rise and shine] (also set the wake-up line; leave it empty to reset)
+[ALARM: off]  /  [ALARM: on]           (disable or re-enable)
+[ALARM_ADD: todos]                     (include a section: weather, calendar, reminders, todos, dory)
+[ALARM_ADD: <the line, in his words>]  (add his own line to every alarm)
+[ALARM_REMOVE: weather]                (drop a section, or a line he added — part of its text is enough)
+
+The alarm only contains real data and lines he asked for. Never invent content \
+for it. Only emit a marker when he asks for a change. When he asks about the \
+alarm, describe exactly the state above — never mention a section listed as \
+NOT included."""
+
+
 def build_system_prompt(
     people: list[dict],
     facts: list[dict],
     events: list[dict] | None = None,
     todos: list[dict] | None = None,
     search_enabled: bool = False,
+    alarm: str = "",
 ) -> str:
     """Assemble the system prompt with known people, facts, schedule, and todos."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -125,12 +147,17 @@ def build_system_prompt(
     parts.append(_REMINDER_INSTRUCTIONS)
     parts.append(_CAMERA_INSTRUCTIONS)
     parts.append(_BUTLER_INSTRUCTIONS)
+    if alarm:
+        parts.append(_ALARM_INSTRUCTIONS.format(current=alarm))
 
     # Today's schedule section
     if events:
         now_utc = datetime.now(timezone.utc)
         lines = ["\n📅 Today's schedule:"]
         for ev in events:
+            if ev.get("all_day"):
+                lines.append(f"• All day  {ev['title']}")
+                continue
             dt_start = datetime.fromisoformat(ev["start_at"]).astimezone()
             dt_start_utc = dt_start.astimezone(timezone.utc)
             start_str = dt_start.strftime("%-H:%M")

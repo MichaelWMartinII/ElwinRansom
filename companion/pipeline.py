@@ -7,7 +7,7 @@ imported and called from any module without relying on module-level globals.
 import logging
 from datetime import datetime
 
-from . import db, dory_bridge, embeddings, extractor, llm_client, memory, reminder, schedule
+from . import alarm, db, dory_bridge, embeddings, extractor, llm_client, memory, reminder, schedule
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ def handle_reminder(conn, response: str) -> tuple[str, str | None]:
 
 
 def handle_butler_markers(conn, response: str) -> tuple[str, list[str]]:
-    """Detect and handle EVENT_ADD, TODO_ADD, TODO_DONE, and NOTE markers.
+    """Detect and handle EVENT_ADD, TODO_ADD, TODO_DONE, ALARM, and NOTE markers.
 
     Returns (cleaned_response, list_of_confirmation_texts). Markers are
     stripped from the displayed response.
@@ -137,6 +137,10 @@ def handle_butler_markers(conn, response: str) -> tuple[str, list[str]]:
             db.complete_todo(conn, todo["id"])
             confirmations.append(f"Todo done: {todo['content']}")
         response = schedule.strip_todo_done_marker(response)
+
+    response, alarm_confirm = alarm.handle_marker(conn, response)
+    if alarm_confirm:
+        confirmations.append(alarm_confirm)
 
     note = schedule.extract_note(response)
     if note:

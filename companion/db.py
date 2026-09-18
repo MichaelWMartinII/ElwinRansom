@@ -88,6 +88,12 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id                TEXT PRIMARY KEY,
     endpoint          TEXT NOT NULL UNIQUE,
@@ -96,7 +102,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 """
 
-_CURRENT_VERSION = 5
+_CURRENT_VERSION = 6
 
 
 def _connect() -> sqlite3.Connection:
@@ -533,4 +539,20 @@ def get_push_subscriptions(conn: sqlite3.Connection) -> list[dict]:
 def delete_push_subscription(conn: sqlite3.Connection, endpoint: str) -> None:
     """Remove a push subscription (called on 410 Gone response)."""
     conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+    conn.commit()
+
+
+# ── Settings ─────────────────────────────────────────────────
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        (key, value, _now()),
+    )
     conn.commit()

@@ -20,13 +20,13 @@ Ransom is a conversational assistant for a household. You talk to it through a t
 
 - **Understands images.** Photos sent via Telegram (or loaded from disk in the CLI) are described by a local vision model (Qwen3-VL-2B). Ransom can also trigger its own camera to take a snapshot when asked.
 
-- **Speaks and listens.** Voice messages in Telegram are transcribed locally (faster-whisper). Responses to voice messages are synthesized and returned as audio (Kokoro TTS). Voice-in gets voice-out.
+- **Speaks and listens.** Voice messages in Telegram are transcribed locally (Qwen3-ASR on MLX). Responses to voice messages are synthesized and returned as audio (Kokoro TTS). Voice-in gets voice-out.
 
 - **Sets reminders.** Ask Ransom to remind you of something and it schedules a native macOS notification and a Telegram message at the specified time — powered by launchd, not a polling loop.
 
 - **Manages your calendar, todos, and notes.** Ransom can add events, create and complete todo items, and capture quick notes. Scheduled events get a 15-minute Telegram prep alert that pulls in everything Ransom knows about the people involved.
 
-- **Delivers a morning briefing.** Each day at a configured time, Ransom pushes a Telegram summary: today's date, local weather, calendar events, pending todos, and reminders due today.
+- **Wakes you up.** A daily alarm (6:30 AM by default) pushes a Telegram message with the morning briefing — date, local weather, calendar events, pending todos, reminders due today — followed by a short spoken voice note. Change the time, days, or wake-up line just by asking.
 
 - **Works offline.** Web search is optional. The core system — inference, memory, fact extraction, vision, voice — runs with no internet connection.
 
@@ -53,7 +53,7 @@ User (terminal or Telegram)
   |
   ├── Text → pass through
   ├── Image → Vision server (Qwen3-VL-2B) → text description
-  └── Voice → faster-whisper (base.en) → transcribed text
+  └── Voice → Qwen3-ASR (MLX) → transcribed text
                           |
                           v
               Input saved to SQLite + embedded into vector space
@@ -101,7 +101,7 @@ The camera module (`camera.py`) captures a single JPEG frame from the laptop's b
 
 ### Speech recognition and TTS
 
-**Speech-to-text** (`audio.py`): Uses `faster-whisper` with the `base.en` model (CTranslate2, int8, ~150 MB). Audio is piped through `ffmpeg` to 16 kHz mono PCM, then transcribed. Supports any audio format ffmpeg can read (`.ogg`, `.mp3`, `.wav`, etc.). Lazy-loaded on first use.
+**Speech-to-text** (`audio.py`): Uses Qwen3-ASR-1.7B (4-bit, via `mlx-audio`, ~1.6 GB) on the Apple GPU, with `STT_HOTWORDS` from `agent.conf` biasing recognition toward names. Audio is piped through `ffmpeg` to 16 kHz mono PCM, then transcribed. Supports any audio format ffmpeg can read (`.ogg`, `.mp3`, `.wav`, etc.). Lazy-loaded on first use.
 
 **Text-to-speech** (`tts.py`): Uses `kokoro-onnx` (v1.0, int8) with the `am_liam` voice (American Male). Produces OGG Opus audio for Telegram's `reply_voice`. Synthesized in a thread; lazy-loaded on first use.
 
@@ -160,12 +160,14 @@ Today's schedule (upcoming events) and top pending todos are included in the sys
 `briefing.py` assembles a daily summary:
 
 - Current date and greeting
-- Local weather (via `wttr.in`)
-- Today's calendar events
-- Up to 10 pending todos by priority
+- Today's forecast (high/low/rain) for each place in `WEATHER_LOCATIONS`, via Open-Meteo
+- Today's events: Elwin's own plus any synced Google/Apple calendars (`GOOGLE_CALENDAR_URLS`, `APPLE_CALENDAR_URLS`, read-only)
 - Reminders due today
+- Dory signals (only when Dory has something relevant)
 
-The briefing is delivered via Telegram. The bot installs a daily launchd plist (`com.elwin.briefing`) at startup that fires at `BRIEFING_HOUR:BRIEFING_MINUTE` (default 8:00 AM) configured in `agent.conf`.
+Every section is optional and only shows real data; Michael adds or removes sections (and his own lines) from chat with `[ALARM_ADD: …]` / `[ALARM_REMOVE: …]`. To-dos are off by default.
+
+The briefing is delivered by the wake-up alarm (`alarm.py`): a launchd plist (`com.elwin.alarm`) that sends the briefing as a Telegram message plus a short Kokoro voice note. Its time, days, on/off state, and wake-up line are stored in the `settings` table and changed from chat via an `[ALARM: HH:MM | days | message]` marker (or `[ALARM: off]` / `[ALARM: on]`); the plist is rewritten on each change and re-synced when the bot starts. `ALARM_TIME` in `agent.conf` (default 06:30) is only the initial value.
 
 ### Context budgeting
 
@@ -230,7 +232,7 @@ Run with `python -m companion.telegram_bot`. Mirrors the full CLI pipeline behin
 - Long responses are automatically split at natural boundaries to respect Telegram's 4,096-character limit.
 - **Text messages** → text reply.
 - **Photos** → analyzed by vision model; caption (if any) treated as a question.
-- **Voice/audio messages** → transcribed by faster-whisper → LLM → synthesized by Kokoro → voice reply.
+- **Voice/audio messages** → transcribed by Qwen3-ASR → LLM → synthesized by Kokoro → voice reply.
 - **[CAMERA] trigger** → captures a photo from the laptop camera, describes it via vision model, sends photo + description.
 - Action markers (search, reminders, events, todos, notes) handled silently; confirmations sent as follow-up messages.
 
@@ -244,6 +246,7 @@ Telegram commands:
 | `/todos` | List pending to-dos |
 | `/notes` | Show recent notes |
 | `/briefing` | Request the morning briefing on demand |
+| `/alarm` | Show the wake-up alarm; `/alarm test` fires it now |
 | `/usage` | Web search quota |
 
 ---
@@ -270,7 +273,7 @@ Telegram commands:
 |---|---|---|
 | `llama.cpp` (llama-server) | Local LLM inference and vision inference | Core |
 | `sentence-transformers` | Local sentence embeddings | Core |
-| `faster-whisper` | Local speech-to-text (base.en, CTranslate2) | Voice input |
+| `mlx-audio` | Local speech-to-text (Qwen3-ASR, MLX) | Voice input |
 | `kokoro-onnx` | Local text-to-speech (Kokoro v1.0 ONNX) | Voice output |
 | `soundfile` | WAV file writing for TTS pipeline | Voice output |
 | `python-telegram-bot` | Telegram frontend | Telegram bot only |
@@ -308,13 +311,16 @@ Agent/
     extractor.py           # Background fact extraction
     brave_search.py        # Web search integration (stdlib urllib)
     controller.py          # Input normalizer: TEXT / IMAGE / VOICE → text
-    audio.py               # STT via faster-whisper (base.en)
+    audio.py               # STT via Qwen3-ASR (mlx-audio)
     tts.py                 # TTS via Kokoro ONNX → OGG Opus
     vision.py              # Image understanding via vision llama-server
     camera.py              # Laptop camera capture via ffmpeg/avfoundation
     reminder.py            # [REMIND:] marker parsing + launchd scheduling
     schedule.py            # [EVENT_ADD/TODO_ADD/TODO_DONE/NOTE:] markers + launchd prep
-    briefing.py            # Morning briefing assembly + launchd install
+    calendar_sync.py       # Read-only calendar sync from private iCal (ICS) links
+    weather.py             # Open-Meteo daily forecast for configured places
+    alarm.py               # Wake-up alarm: settings, [ALARM] marker, launchd, delivery
+    briefing.py            # Morning briefing assembly
     fire_reminder.py       # launchd entry: deliver + clean up a reminder
     fire_prep.py           # launchd entry: 15-min event prep alert
     cli.py                 # Terminal REPL

@@ -21,13 +21,15 @@ from telegram.ext import (
     filters,
 )
 
-from . import brave_search, camera, config, db, dory_bridge, embeddings, llm_client, pipeline, schedule, tts, vision
+from . import alarm, brave_search, camera, config, db, dory_bridge, embeddings, llm_client, pipeline, schedule, tts, vision
 from .controller import InputType, process_input
 
 logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     level=logging.INFO,
 )
+# httpx logs every request URL at INFO, and Telegram URLs embed the bot token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ── Module state ─────────────────────────────────────────────
@@ -449,9 +451,29 @@ async def cmd_briefing(update: Update, context) -> None:
         await update.message.reply_text("This bot is private.")
         return
     from . import briefing
-    text = await asyncio.to_thread(briefing.assemble, _conn)
+    settings = alarm.get_settings(_conn)
+    text = await asyncio.to_thread(
+        briefing.assemble, _conn, "", settings["sections"], settings["extras"]
+    )
     for chunk in _split_message(text):
         await update.message.reply_text(chunk)
+
+
+async def cmd_alarm(update: Update, context) -> None:
+    """/alarm shows the wake-up alarm; /alarm test fires it now."""
+    if not _is_owner(update.effective_user.id):
+        await update.message.reply_text("This bot is private.")
+        return
+    if context.args and context.args[0].lower() == "test":
+        await update.message.reply_text("Firing the alarm now...")
+        await asyncio.to_thread(alarm.fire, _conn)
+        return
+    settings = alarm.get_settings(_conn)
+    await update.message.reply_text(
+        f"⏰ Alarm: {alarm.describe(settings)}\n"
+        "Change it by just asking, e.g. \"move my alarm to 6:45 on weekdays\". "
+        "/alarm test fires it now."
+    )
 
 
 # ── Entry point ──────────────────────────────────────────────
@@ -489,10 +511,9 @@ def main() -> None:
     embeddings.get_model()
     print("done.")
 
-    # Install daily briefing plist if not already present
-    from . import briefing as _briefing
-    if _briefing.install():
-        print("Briefing plist installed.")
+    # Sync the wake-up alarm's launchd job with its stored settings
+    if alarm.install(_conn):
+        print(f"Alarm: {alarm.describe(alarm.get_settings(_conn))}")
 
     # Build Telegram app
     app = (
@@ -507,6 +528,7 @@ def main() -> None:
     app.add_handler(CommandHandler("todos", cmd_todos))
     app.add_handler(CommandHandler("notes", cmd_notes))
     app.add_handler(CommandHandler("briefing", cmd_briefing))
+    app.add_handler(CommandHandler("alarm", cmd_alarm))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))

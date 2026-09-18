@@ -242,7 +242,7 @@
 
   <div id="messages">
     <div class="message system">
-      Running on a 2020 MacBook Pro (Apple M1, 16GB unified memory) in Murfreesboro, TN. No data is stored or sent to any cloud service.
+      Running on a 2020 MacBook Pro (Apple M1, 16GB unified memory) at Michael's home. No data is stored or sent to any cloud service.
     </div>
   </div>
 
@@ -274,18 +274,35 @@ const sendIcon    = document.getElementById('send-icon');
 const stopIcon    = document.getElementById('stop-icon');
 const remainingEl = document.getElementById('remaining-badge');
 
+// Served by Elwin itself or as a static copy on the portfolio; the API always
+// lives on Elwin's host. Keep this file identical in both repos.
+const API = location.hostname === 'elwinransom.michaelwmartinjr.com'
+  || location.hostname === 'localhost' || location.hostname === '127.0.0.1'
+  ? '' : 'https://elwinransom.michaelwmartinjr.com';
+
+const OFFLINE_NOTE = "Elwin is offline right now — it runs on Michael's laptop, "
+  + "which is asleep or unplugged. Please try again later.";
+
 let busy = false;
+let online = false;
 let remaining = 10;
 const history = [];
 let _abort = null;
 
 async function loadStatus() {
   try {
-    const r = await fetch('/api/demo/status');
+    const r = await fetch(`${API}/api/demo/status`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const d = await r.json();
     remaining = d.remaining;
+    online = true;
     updateBadge();
-  } catch {}
+  } catch {
+    online = false;
+    remainingEl.textContent = 'Offline';
+    appendSystem(OFFLINE_NOTE);
+    inputEl.disabled = true;
+  }
 }
 
 function updateBadge() {
@@ -420,7 +437,7 @@ function scrollDown() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
 async function send() {
   const text = inputEl.value.trim();
-  if (!text || busy || remaining <= 0) return;
+  if (!text || busy || !online || remaining <= 0) return;
 
   if (_abort) _abort.abort();
   const ctrl = new AbortController();
@@ -435,7 +452,7 @@ async function send() {
   let streamed = '';
 
   try {
-    const resp = await fetch('/api/demo/chat', {
+    const resp = await fetch(`${API}/api/demo/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, history }),
@@ -485,7 +502,9 @@ async function send() {
       finalizeResponse(div, span, streamed);
     } else {
       removeDots();
-      span.textContent = `Error: ${e.message}`;
+      span.textContent = e instanceof TypeError
+        ? OFFLINE_NOTE
+        : `Error: ${e.message}`;
     }
   } finally {
     _abort = null;
@@ -504,7 +523,7 @@ function adjustHeight() {
 
 inputEl.addEventListener('input', () => {
   adjustHeight();
-  sendBtn.disabled = !inputEl.value.trim() || remaining <= 0;
+  sendBtn.disabled = !inputEl.value.trim() || !online || remaining <= 0;
 });
 
 inputEl.addEventListener('keydown', e => {
@@ -517,7 +536,7 @@ sendBtn.addEventListener('click', () => {
 });
 
 loadStatus().then(() => {
-  sendBtn.disabled = remaining <= 0 || !inputEl.value.trim();
+  sendBtn.disabled = !online || remaining <= 0 || !inputEl.value.trim();
 });
 </script>
 </body>

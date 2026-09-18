@@ -128,6 +128,8 @@ def _current_session() -> str:
 
 async def _sse_start(request: web.Request) -> web.StreamResponse:
     resp = web.StreamResponse()
+    # Headers must be set before prepare(); anything added afterwards is dropped.
+    resp.headers.update(_cors_headers(request))
     resp.headers["Content-Type"] = "text/event-stream; charset=utf-8"
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
@@ -138,6 +140,36 @@ async def _sse_start(request: web.Request) -> web.StreamResponse:
 async def _sse_send(resp: web.StreamResponse, data: dict) -> None:
     payload = f"data: {json.dumps(data)}\n\n"
     await resp.write(payload.encode())
+
+
+# ── CORS for the public demo API ─────────────────────────────
+# The portfolio and the physics site call /api/demo/* from their own origins.
+
+def _cors_headers(request: web.Request) -> dict[str, str]:
+    origin = request.headers.get("Origin", "")
+    if not request.path.startswith("/api/demo/") or origin not in config.DEMO_ORIGINS:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Vary": "Origin",
+    }
+
+
+@web.middleware
+async def _cors_middleware(request: web.Request, handler):
+    if request.method == "OPTIONS" and request.path.startswith("/api/demo/"):
+        return web.Response(status=204, headers=_cors_headers(request))
+    try:
+        resp = await handler(request)
+    except web.HTTPException as exc:
+        # Let the browser read error responses (e.g. 400) too.
+        exc.headers.update(_cors_headers(request))
+        raise
+    if not resp.prepared:
+        resp.headers.update(_cors_headers(request))
+    return resp
 
 
 # ── Auth middleware ───────────────────────────────────────────
@@ -788,6 +820,17 @@ async def api_demo_status(request: web.Request) -> web.Response:
 async def api_demo_chat(request: web.Request) -> web.StreamResponse:
     ip = _get_client_ip(request)
 
+    try:
+        data = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(reason="Invalid JSON")
+
+    user_text = (data.get("text") or "")[:2000].strip()
+    history = data.get("history") or []  # list of {role, content}
+    if not user_text:
+        raise web.HTTPBadRequest(reason="text required")
+
+    # Count only valid requests, so health probes don't eat the daily limit.
     if not _demo_consume(ip):
         sse_resp = await _sse_start(request)
         await _sse_send(sse_resp, {
@@ -797,21 +840,11 @@ async def api_demo_chat(request: web.Request) -> web.StreamResponse:
         await _sse_send(sse_resp, {"type": "done"})
         return sse_resp
 
-    try:
-        data = await request.json()
-    except Exception:
-        raise web.HTTPBadRequest(reason="Invalid JSON")
-
-    user_text = (data.get("text") or "").strip()
-    history = data.get("history") or []  # list of {role, content}
-    if not user_text:
-        raise web.HTTPBadRequest(reason="text required")
-
     # Build messages: system + recent history (last 10 turns) + new user message
     messages = [{"role": "system", "content": _DEMO_SYSTEM}]
     for turn in history[-10:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):
-            messages.append({"role": turn["role"], "content": turn["content"]})
+            messages.append({"role": turn["role"], "content": str(turn["content"])[:1000]})
     messages.append({"role": "user", "content": user_text})
 
     sse_resp = await _sse_start(request)
@@ -853,15 +886,6 @@ async def api_demo_chat(request: web.Request) -> web.StreamResponse:
 async def api_physics_hint(request: web.Request) -> web.StreamResponse:
     ip = _get_client_ip(request)
 
-    if not _demo_consume(ip):
-        sse_resp = await _sse_start(request)
-        await _sse_send(sse_resp, {
-            "type": "error",
-            "content": f"Rate limit reached ({DEMO_LIMIT} messages per day). Try again tomorrow."
-        })
-        await _sse_send(sse_resp, {"type": "done"})
-        return sse_resp
-
     try:
         data = await request.json()
     except Exception:
@@ -873,6 +897,16 @@ async def api_physics_hint(request: web.Request) -> web.StreamResponse:
     history = data.get("messages") or []
     if not history:
         raise web.HTTPBadRequest(reason="messages required")
+
+    # Count only valid requests, so health probes don't eat the daily limit.
+    if not _demo_consume(ip):
+        sse_resp = await _sse_start(request)
+        await _sse_send(sse_resp, {
+            "type": "error",
+            "content": f"Rate limit reached ({DEMO_LIMIT} messages per day). Try again tomorrow."
+        })
+        await _sse_send(sse_resp, {"type": "done"})
+        return sse_resp
 
     # Build context prefix describing the problem and student's attempt
     context_parts = [f"The student is working on this physics problem:\n{problem}"]
@@ -888,8 +922,6 @@ async def api_physics_hint(request: web.Request) -> web.StreamResponse:
             messages.append({"role": turn["role"], "content": str(turn["content"])[:1000]})
 
     sse_resp = await _sse_start(request)
-    # Add CORS headers for the physics site
-    sse_resp.headers["Access-Control-Allow-Origin"] = "*"
 
     loop = asyncio.get_running_loop()
     token_queue: asyncio.Queue = asyncio.Queue()
@@ -921,14 +953,6 @@ async def api_physics_hint(request: web.Request) -> web.StreamResponse:
     return sse_resp
 
 
-async def api_physics_hint_preflight(request: web.Request) -> web.Response:
-    return web.Response(headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    })
-
-
 async def api_mcp_reload(request: web.Request) -> web.Response:
     mcp_client.reset_loaded()
     count = await asyncio.to_thread(mcp_client.load_mcp_tools)
@@ -944,7 +968,7 @@ async def index(request: web.Request) -> web.FileResponse:
 # ── App factory ───────────────────────────────────────────────
 
 def _make_app() -> web.Application:
-    app = web.Application(middlewares=[_auth_middleware])
+    app = web.Application(middlewares=[_cors_middleware, _auth_middleware])
 
     app.router.add_get("/", index)
     app.router.add_get("/demo",                    demo_index)
@@ -972,7 +996,6 @@ def _make_app() -> web.Application:
     app.router.add_post("/api/push/subscribe",     api_push_subscribe)
     app.router.add_get( "/api/push/vapid-public-key", api_push_vapid_key)
     app.router.add_post("/api/mcp/reload",         api_mcp_reload)
-    app.router.add_options("/api/demo/physics-hint", api_physics_hint_preflight)
     app.router.add_post( "/api/demo/physics-hint",   api_physics_hint)
 
     return app

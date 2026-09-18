@@ -137,9 +137,18 @@ def build_system_prompt(
     search_enabled: bool = False,
     alarm: str = "",
 ) -> str:
-    """Assemble the system prompt with known people, facts, schedule, and todos."""
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    parts = [BASE_PROMPT, f"\nThe current local date and time is {now_str}."]
+    """Assemble the system prompt with known people, facts, schedule, and todos.
+
+    Sections are ordered most-stable first, and that order is load-bearing.
+    A KV prefix cache is reusable only up to the first byte that differs from
+    the last turn, so anything volatile placed early throws away the cache for
+    everything after it. The clock changes every minute and the meeting
+    countdown changes every minute, so both go last. This prompt runs ~3.5k
+    tokens; with the timestamp near the top that was a full reprocess on most
+    turns.
+    """
+    # Stable: byte-identical on every turn.
+    parts = [BASE_PROMPT]
 
     if search_enabled:
         parts.append(_SEARCH_INSTRUCTIONS)
@@ -147,41 +156,8 @@ def build_system_prompt(
     parts.append(_REMINDER_INSTRUCTIONS)
     parts.append(_CAMERA_INSTRUCTIONS)
     parts.append(_BUTLER_INSTRUCTIONS)
-    if alarm:
-        parts.append(_ALARM_INSTRUCTIONS.format(current=alarm))
 
-    # Today's schedule section
-    if events:
-        now_utc = datetime.now(timezone.utc)
-        lines = ["\n📅 Today's schedule:"]
-        for ev in events:
-            if ev.get("all_day"):
-                lines.append(f"• All day  {ev['title']}")
-                continue
-            dt_start = datetime.fromisoformat(ev["start_at"]).astimezone()
-            dt_start_utc = dt_start.astimezone(timezone.utc)
-            start_str = dt_start.strftime("%-H:%M")
-            if ev.get("end_at"):
-                dt_end = datetime.fromisoformat(ev["end_at"]).astimezone()
-                end_str = dt_end.strftime("%-H:%M")
-                lines.append(f"• {start_str}–{end_str}  {ev['title']}")
-            else:
-                lines.append(f"• {start_str}  {ev['title']}")
-            # Upcoming meeting warning (within 60 min)
-            delta_min = (dt_start_utc - now_utc).total_seconds() / 60
-            if 0 < delta_min <= 60:
-                lines.append(f"  ⚠ In {int(delta_min)} min: {ev['title']}")
-        parts.append("\n".join(lines))
-
-    # Pending todos section (top 5, priority ordered)
-    if todos:
-        priority_map = {"high": "H", "medium": "M", "low": "L"}
-        lines = ["\n✅ Pending tasks:"]
-        for t in todos[:5]:
-            p = priority_map.get(t.get("priority", "medium"), "M")
-            lines.append(f"• [{p}] {t['content']}")
-        parts.append("\n".join(lines))
-
+    # Rarely changes: only when Elwin learns something or is told to.
     if people:
         lines = []
         for p in people:
@@ -194,5 +170,45 @@ def build_system_prompt(
         for f in facts:
             lines.append(f"- {f['entity']}: {f['content']}")
         parts.append("\nThings I remember:\n" + "\n".join(lines))
+
+    if alarm:
+        parts.append(_ALARM_INSTRUCTIONS.format(current=alarm))
+
+    # Changes through the day.
+    if todos:
+        priority_map = {"high": "H", "medium": "M", "low": "L"}
+        lines = ["\n\u2705 Pending tasks:"]
+        for t in todos[:5]:
+            p = priority_map.get(t.get("priority", "medium"), "M")
+            lines.append(f"\u2022 [{p}] {t['content']}")
+        parts.append("\n".join(lines))
+
+    # Changes every minute while a meeting is within the hour: the countdown
+    # below is as volatile as the clock, so it sits with it at the end.
+    if events:
+        now_utc = datetime.now(timezone.utc)
+        lines = ["\n\U0001f4c5 Today's schedule:"]
+        for ev in events:
+            if ev.get("all_day"):
+                lines.append(f"\u2022 All day  {ev['title']}")
+                continue
+            dt_start = datetime.fromisoformat(ev["start_at"]).astimezone()
+            dt_start_utc = dt_start.astimezone(timezone.utc)
+            start_str = dt_start.strftime("%-H:%M")
+            if ev.get("end_at"):
+                dt_end = datetime.fromisoformat(ev["end_at"]).astimezone()
+                end_str = dt_end.strftime("%-H:%M")
+                lines.append(f"\u2022 {start_str}\u2013{end_str}  {ev['title']}")
+            else:
+                lines.append(f"\u2022 {start_str}  {ev['title']}")
+            # Upcoming meeting warning (within 60 min)
+            delta_min = (dt_start_utc - now_utc).total_seconds() / 60
+            if 0 < delta_min <= 60:
+                lines.append(f"  \u26a0 In {int(delta_min)} min: {ev['title']}")
+        parts.append("\n".join(lines))
+
+    # Changes every minute. Keep this last.
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    parts.append(f"\nThe current local date and time is {now_str}.")
 
     return "\n".join(parts)

@@ -32,33 +32,21 @@ directly. Respond naturally. Do not mention transcription."""
 
 _SEARCH_INSTRUCTIONS = """\
 
-You have access to web search. When a question needs current or real-time \
-information (weather, news, sports scores, stock prices, recent events, etc.), \
-you MUST search by writing a line in this exact format:
+You have web search. When a question needs current or real-time information \
+(weather, news, scores, prices, recent events), emit one line:
 
 [SEARCH: current weather in Paris]
 
-Replace the query with whatever is relevant to the user's question. Examples:
-- User asks about weather → [SEARCH: weather in Chicago today]
-- User asks about news → [SEARCH: latest news today]
-- User asks about a stock → [SEARCH: AAPL stock price today]
+Write a real query, never the literal word "query". The system runs it and \
+injects the results; answer from those results alone. One search per response, \
+and none for things you already know.
 
-RULES:
-- Always replace the query with a real search — never output the word "query" \
-literally.
-- The system executes the search and injects the results. Answer from those \
-results only.
-- Do not search for things you already know. One search per response.
-- NEVER invent weather conditions, temperatures, prices, scores, or any \
-real-time data. If you have not searched and received results, you do not \
-know the answer. Say so plainly: "I don't have current data on that — \
-let me search." Then search.
-- If search returns no results or fails, say you couldn't find current \
-information. Do not guess or fabricate. Do not cite sources you did not \
-actually consult.
-- Use the current date to reason about whether an event has happened yet. \
-If someone asks for the result of an event that has not yet occurred, say \
-it hasn't happened yet. Do not report previews, odds, or predictions as results."""
+Never invent real-time data — temperatures, prices, scores, conditions. Without \
+results you do not know it: say "I don't have current data on that — let me \
+search," then search. If the search fails or returns nothing, say so plainly; \
+do not guess, and do not cite a source you did not actually receive. Check the \
+current date before calling an event finished — if it has not happened yet, say \
+so rather than passing previews, odds, or predictions off as results."""
 
 
 _REMINDER_INSTRUCTIONS = """\
@@ -68,8 +56,9 @@ write a line in this exact format:
 
 [REMIND: YYYY-MM-DD HH:MM | reminder text]
 
-Use 24-hour time. Always include the full date. Examples:
-- User asks to be reminded at 3pm → [REMIND: 2026-02-19 15:00 | whatever they said]
+Use 24-hour time. Always include the full date, taken from the current date and \
+time given at the end of this prompt — never from an example. Examples:
+- User asks to be reminded at 3pm → [REMIND: <today> 15:00 | whatever they said]
 - User asks for a reminder in 30 minutes → compute the time from now and use that
 
 One reminder per response. The system will fire it at the specified local time \
@@ -93,8 +82,9 @@ _BUTLER_INSTRUCTIONS = """\
 
 You can schedule events, manage to-dos, and capture notes. Use these markers exactly:
 
-[EVENT_ADD: 2026-02-19 14:00 | 2026-02-19 15:00 | 1:1 with Dave]
-(add calendar event; end time is optional — omit the second date/time if not given)
+[EVENT_ADD: YYYY-MM-DD 14:00 | YYYY-MM-DD 15:00 | 1:1 with Dave]
+(add calendar event; use the real date from the end of this prompt, never a date \
+copied from an example. End time is optional — omit the second date/time if not given)
 
 [TODO_ADD: high | Review Q1 report]
 (add a to-do; priority is high/medium/low — omit "priority |" to default to medium)

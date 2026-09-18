@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS facts (
     content        TEXT NOT NULL,
     source_msg_id  TEXT REFERENCES messages(id),
     created_at     TEXT NOT NULL,
-    superseded_by  TEXT REFERENCES facts(id)
+    superseded_by  TEXT REFERENCES facts(id),
+    expires_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_facts_entity ON facts(entity);
 
@@ -102,7 +103,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 """
 
-_CURRENT_VERSION = 6
+_CURRENT_VERSION = 7
 
 
 def _connect() -> sqlite3.Connection:
@@ -114,10 +115,21 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply changes that CREATE TABLE IF NOT EXISTS cannot make to an
+    existing table. Each step must be safe to run on an already-migrated
+    database."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(facts)")}
+    if "expires_at" not in cols:
+        conn.execute("ALTER TABLE facts ADD COLUMN expires_at TEXT")
+        conn.commit()
+
+
 def init_db() -> sqlite3.Connection:
     """Create tables if needed and return a connection."""
     conn = _connect()
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     # Set or update version
     row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
     if row[0] is None:
@@ -225,9 +237,14 @@ def upsert_person(
     conn: sqlite3.Connection,
     name: str,
     relationship: str | None = None,
-) -> str:
+) -> str | None:
+    """Record someone Elwin knows. Returns None for a rejected name."""
+    name = (name or "").strip()
+    if not name or is_self_reference(name):
+        return None
+    # Match case-insensitively so "user" and "User" don't become two people.
     row = conn.execute(
-        "SELECT id FROM people WHERE name = ?", (name,)
+        "SELECT id FROM people WHERE lower(name) = lower(?)", (name,)
     ).fetchone()
     if row:
         if relationship:
@@ -256,39 +273,108 @@ def get_all_people(conn: sqlite3.Connection) -> list[dict]:
 
 # ── Facts ─────────────────────────────────────────────────────
 
+# Ephemeral categories expire; identity-level ones persist. Without this,
+# a one-off errand or a race result stays in the system prompt forever.
+_FACT_TTL_DAYS = {
+    "event": 30,
+    "concern": 90,
+    "project": 180,
+}
+
+# Elwin is not a person it knows, and not a subject it stores facts about.
+_SELF_NAMES = {
+    "elwin", "ransom", "elwin ransom", "assistant", "the assistant", "ai", "you",
+}
+
+
+def is_self_reference(name: str) -> bool:
+    """True if *name* refers to the assistant rather than someone it knows."""
+    return (name or "").strip().lower() in _SELF_NAMES
+
+
 def save_fact(
     conn: sqlite3.Connection,
     entity: str,
     category: str,
     content: str,
     source_msg_id: str | None = None,
-) -> str:
+) -> str | None:
+    """Store a fact, or return an existing id when it is already known.
+
+    Returns None when the fact is rejected (empty, or about Elwin itself).
+    """
+    entity = (entity or "").strip()
+    content = (content or "").strip()
+    category = (category or "general").strip().lower()
+    if not entity or not content or is_self_reference(entity):
+        return None
+
+    # Reuse whatever casing this entity was first stored under, so "user" and
+    # "User" stay one entity instead of two half-histories.
+    row = conn.execute(
+        "SELECT entity FROM facts WHERE lower(entity) = lower(?) "
+        "ORDER BY created_at LIMIT 1",
+        (entity,),
+    ).fetchone()
+    if row:
+        entity = row["entity"]
+
+    # Already live, verbatim — don't store it twice.
+    dup = conn.execute(
+        "SELECT id FROM facts WHERE superseded_by IS NULL "
+        "AND lower(entity) = lower(?) AND lower(trim(content)) = lower(trim(?))",
+        (entity, content),
+    ).fetchone()
+    if dup:
+        return dup["id"]
+
+    ttl = _FACT_TTL_DAYS.get(category)
+    expires_at = (
+        (datetime.now(timezone.utc) + timedelta(days=ttl)).isoformat() if ttl else None
+    )
+
     fid = _uid()
     conn.execute(
-        "INSERT INTO facts (id, entity, category, content, source_msg_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (fid, entity, category, content, source_msg_id, _now()),
+        "INSERT INTO facts (id, entity, category, content, source_msg_id, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (fid, entity, category, content, source_msg_id, _now(), expires_at),
     )
     conn.commit()
     return fid
 
 
+def supersede_fact(conn: sqlite3.Connection, old_id: str, new_id: str) -> None:
+    """Mark *old_id* as replaced by *new_id*."""
+    conn.execute(
+        "UPDATE facts SET superseded_by = ? WHERE id = ?", (new_id, old_id)
+    )
+    conn.commit()
+
+
 def get_active_facts(
-    conn: sqlite3.Connection, entity: str | None = None
+    conn: sqlite3.Connection, entity: str | None = None, limit: int | None = None
 ) -> list[dict]:
-    """Return facts not superseded. Optionally filter by entity."""
+    """Return facts that are neither superseded nor expired.
+
+    *limit* keeps the newest N, so a long-lived database cannot grow the
+    system prompt without bound.
+    """
+    now = _now()
+    params: list = [now]
+    sql = (
+        "SELECT entity, category, content FROM facts "
+        "WHERE superseded_by IS NULL AND (expires_at IS NULL OR expires_at > ?)"
+    )
     if entity:
-        rows = conn.execute(
-            "SELECT entity, category, content FROM facts "
-            "WHERE superseded_by IS NULL AND entity = ? ORDER BY created_at",
-            (entity,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT entity, category, content FROM facts "
-            "WHERE superseded_by IS NULL ORDER BY entity, created_at"
-        ).fetchall()
-    return [dict(r) for r in rows]
+        sql += " AND entity = ?"
+        params.append(entity)
+    sql += " ORDER BY created_at DESC"
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    # Newest were selected; present them grouped by entity as before.
+    return sorted((dict(r) for r in rows), key=lambda r: (r["entity"].lower(),))
 
 
 # ── Search Usage ─────────────────────────────────────────────

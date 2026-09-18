@@ -43,6 +43,8 @@ PROMPT_BUDGET    = CTX_SIZE - RESPONSE_BUDGET      # 75% for the input
 
 SYSTEM_TOKEN_BUDGET = max(400, CTX_SIZE // 6)      # ~17% for system prompt
 MEMORY_TOKEN_BUDGET = max(200, CTX_SIZE // 8)      # ~12% for retrieved memories
+# Most recent facts allowed into the system prompt.
+MAX_PROMPT_FACTS = int(_conf.get("MAX_PROMPT_FACTS", "40"))
 RECENT_TOKEN_BUDGET = PROMPT_BUDGET - SYSTEM_TOKEN_BUDGET - MEMORY_TOKEN_BUDGET
 
 # Paths

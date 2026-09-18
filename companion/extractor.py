@@ -33,8 +33,12 @@ assistant said, assumed, or embellished. The assistant may hallucinate details �
 ignore everything in the assistant's reply that was not confirmed by the user.
 - Never extract facts about the AI assistant itself.
 - If the user did not clearly state a fact, do not infer or guess it.
-- Be liberal — if the user mentions something personal, a preference, a habit, a \
-project, a person, or a life detail, capture it. Err on the side of extracting more.
+- The assistant's reply is context for understanding the user, never a source. \
+Anything it reports from a web search — news, scores, results, prices, weather — \
+is not a fact about the user and must not be extracted.
+- Extract durable things: preferences, habits, projects, relationships, life \
+details. Skip passing states ("is relaxing", "thinks it's fine"), pleasantries, \
+and anything true only for the next few minutes.
 - If nothing notable was explicitly stated by the user, return:
 {"people": [], "facts": []}
 
@@ -81,28 +85,31 @@ def _run_extraction(
         # Process people
         for person in data.get("people", []):
             name = person.get("name", "").strip()
-            if name:
-                db.upsert_person(
-                    conn,
-                    name=name,
-                    relationship=person.get("relationship"),
-                )
-                logger.info("Learned person: %s", name)
+            if not name:
+                continue
+            if db.upsert_person(conn, name=name,
+                                relationship=person.get("relationship")) is None:
+                logger.debug("Skipped person: %s", name)
+                continue
+            logger.info("Learned person: %s", name)
 
         # Process facts
         for fact in data.get("facts", []):
             entity = fact.get("entity", "").strip()
             content = fact.get("content", "").strip()
             category = fact.get("category", "general").strip()
-            if entity and content:
-                db.save_fact(
-                    conn,
-                    entity=entity,
-                    category=category,
-                    content=content,
-                    source_msg_id=source_msg_id,
-                )
-                logger.info("Extracted fact: [%s] %s — %s", category, entity, content)
+            if not (entity and content):
+                continue
+            if db.save_fact(
+                conn,
+                entity=entity,
+                category=category,
+                content=content,
+                source_msg_id=source_msg_id,
+            ) is None:
+                logger.debug("Skipped fact about %s", entity)
+                continue
+            logger.info("Extracted fact: [%s] %s — %s", category, entity, content)
 
         if not data.get("people") and not data.get("facts"):
             logger.debug("Extraction found nothing notable")

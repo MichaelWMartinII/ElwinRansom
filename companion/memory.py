@@ -37,7 +37,9 @@ def assemble_context(
 
     # 1. System prompt
     people = db.get_all_people(conn)
-    facts = db.get_active_facts(conn)
+    # Cap what reaches the prompt: unbounded memory is how the system
+    # prompt quietly grows past its budget.
+    facts = db.get_active_facts(conn, limit=config.MAX_PROMPT_FACTS)
     events = calendar_sync.all_todays_events(conn)
     todos = db.get_pending_todos(conn)
     system_text = build_system_prompt(

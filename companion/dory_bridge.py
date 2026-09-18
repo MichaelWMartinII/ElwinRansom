@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import logging
 import inspect
+import os
 import threading
 from typing import Any
 
 from . import config
 
 logger = logging.getLogger(__name__)
+
+# Dory's native Ollama backend reads the server address from OLLAMA_HOST.
+os.environ.setdefault("OLLAMA_HOST", config.LLM_BASE_URL)
 
 try:
     from dory import DoryMemory
@@ -55,12 +59,13 @@ def get_memory() -> DoryMemory | None:
         if _memory is not None:
             return _memory
         try:
+            # Native backend, not /v1: Dory sends think=False there. Through the
+            # OpenAI-compatible endpoint gemma4 thinks past Dory's timeout and
+            # every extraction was silently dropped.
             kwargs = {
                 "db_path": config.DORY_DB_PATH,
                 "extract_model": config.MODEL or "local-model",
-                "extract_backend": "openai",
-                "extract_base_url": config.LLM_BASE_URL,
-                "extract_api_key": config.LLM_API_KEY or "local",
+                "extract_backend": "ollama",
                 "session_id": "elwin-ransom",
             }
             params = inspect.signature(DoryMemory.__init__).parameters
@@ -84,7 +89,9 @@ def query(topic: str) -> str:
     if mem is None or not topic.strip():
         return ""
     try:
-        return (mem.query(topic) or "").strip()
+        result = (mem.query(topic) or "").strip()
+        # Dory returns a placeholder sentence when nothing matches.
+        return "" if result == "(no relevant memories found)" else result
     except Exception as exc:
         logger.warning("Dory query failed: %s", exc)
         return ""
